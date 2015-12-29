@@ -1,12 +1,9 @@
 ﻿namespace FLenser.Core
 
 open System
-open System.Text
 open System.Collections.Generic
-open System.Data
 open System.Data.Common
 open FSharpx
-open FSharpx.Extras
 open FSharpx.Control
 open Nessos.FsPickler
 open Nessos.FsPickler.Json

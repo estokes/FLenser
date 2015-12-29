@@ -15,10 +15,7 @@ database schema and the programming language types is as much of a win as it see
 namespace FLenser.Core
 open System
 open System.Collections.Generic
-open System.Data
 open System.Data.Common
-open FSharpx
-open FSharpx.Extras
 
 // A virtual record field is a field in the database that is derived from
 // a function on the underlying record, it need not exist in the record.
