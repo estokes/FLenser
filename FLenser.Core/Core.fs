@@ -1,4 +1,4 @@
-﻿namespace SPO.Base.Db
+﻿namespace FLenser.Core
 
 open System
 open System.Text
@@ -7,10 +7,10 @@ open System.Data
 open System.Data.Common
 open FSharpx
 open FSharpx.Extras
+open FSharpx.Control
 open Nessos.FsPickler
 open Nessos.FsPickler.Json
 open Microsoft.FSharp.Reflection
-open SPO.Base
 
 exception UnexpectedNull
 
@@ -32,6 +32,38 @@ type lens<'A> internal (createParams: (String -> DbParameter)
 type NonQuery = {nothing: unit}
 
 module Utils =
+    type Throttle(maxConcurrentJobs: int, start: Async<_> -> unit) = 
+        let waiting = BlockingQueueAgent<_>(max maxConcurrentJobs 50)
+        let running = BlockingQueueAgent<_>(maxConcurrentJobs)
+        let rec loop () = async {
+            let! (job, finished) = waiting.AsyncGet ()
+            do! running.AsyncAdd (())
+            start job
+            async { do! finished
+                    do! running.AsyncGet () }
+            |> Async.Start
+            return! loop () }
+        do loop () |> Async.Start
+        member t.EnqueueWait(job: Async<'A>) : Async<'A> = async { 
+            let! res = t.Enqueue job
+            return! res }
+        member __.Enqueue(job: Async<'A>) : Async<Async<'A>> = async {
+            let result = AsyncResultCell()
+            let job = async {
+                try
+                    let! res = job
+                    result.RegisterResult (AsyncOk res)
+                with e -> result.RegisterResult (AsyncException e) }
+            let finished = async {
+                try do! result.AsyncResult |> Async.Ignore
+                with _ -> () }
+            do! waiting.AsyncAdd ((job, finished))
+            return result.AsyncResult }
+
+    type Result<'A, 'B> =
+        | Ok of 'A
+        | Error of 'B
+
     let ord (r: DbDataReader) name = 
         try r.GetOrdinal name
         with e -> failwith (sprintf "could not find field %s %A" name e)

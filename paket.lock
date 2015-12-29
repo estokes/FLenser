@@ -10,3 +10,8 @@ NUGET
     FSharpx.Extras (1.10.3)
       FSharpx.Async (>= 1.12)
       FSharpx.Collections (>= 1.10.1)
+    FsPickler (1.7.0)
+    FsPickler.Json (1.7.0)
+      FsPickler (1.7.0)
+      Newtonsoft.Json (>= 6.0.5)
+    Newtonsoft.Json (8.0.1)
