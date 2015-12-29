@@ -12,7 +12,7 @@ in between me and SQL (e.g. Linq is cool, but I think ultimatly a burden).
 database this makes life easier as the schema evolves. I don't think tight coupling between the 
 database schema and the programming language types is as much of a win as it seems like it should  be. *)
 
-namespace SPO.Base.Db
+namespace FLenser.Core
 open System
 open System.Collections.Generic
 open System.Data
