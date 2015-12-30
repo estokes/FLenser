@@ -95,6 +95,8 @@ module Utils =
 
 open Utils
 
+type CreateSubLensAttribute() = inherit Attribute()
+
 type Lens =
     static member NonQuery with get() = NonQueryLens
     static member Create<'A>(?virtualDbFields: Map<String, virtualDbField>,
@@ -359,20 +361,20 @@ type Parameter =
     static member DateTime(name) = Parameter.Create<DateTime>(name)
     static member TimeSpan(name) = Parameter.Create<TimeSpan>(name)
 
-type query<'A, 'B> internal (sql:String, lens:lens<'B>, pars: String[], 
+type query<'A, 'B> internal (sql:String, lens:lens<'B>, pars: String[],
                              set:DbParameterCollection -> 'A -> unit) =
     let mutable onDispose = []
     interface IDisposable with 
         member __.Dispose() = onDispose |> List.iter (fun f -> f ())
     member o.Dispose() = (o :> IDisposable).Dispose ()
     member val Guid = Guid.NewGuid() with get
-    member internal __.Sql with get() = sql
-    member internal __.Lens with get() = lens
-    member internal __.Parameters with get() = pars
+    member __.Sql with get() = sql
+    member __.Lens with get() = lens
+    member __.Parameters with get() = pars
     member internal __.Set(pars, a) = set pars a
     member internal __.PushDispose(f) = onDispose <- f :: onDispose
 
-type Query =
+type Query private () =
     static member Create(sql, lens: lens<'B>) = 
         new query<unit, 'B>(sql, lens, [||], fun _ _ -> ())
     static member Create(sql, lens, p1:parameter<'P1>) =
@@ -380,7 +382,8 @@ type Query =
     static member Create(sql, lens, p1:parameter<'P1>, p2:parameter<'P2>) =
         new query<_,_>(sql, lens, [|p1.Name; p2.Name|],
             fun p (p1: 'P1, p2: 'P2) -> p.[0].Value <- p1; p.[1].Value <- p2)
-    static member Create(sql, lens, p1:parameter<'P1>, p2:parameter<'P2>, p3:parameter<'P3>) =
+    static member Create(sql, lens, p1:parameter<'P1>, p2:parameter<'P2>, 
+                         p3:parameter<'P3>) =
         new query<_, _>(sql, lens, [|p1.Name; p2.Name; p3.Name|],
             fun p (p1: 'P1, p2: 'P2, p3: 'P3) -> 
                 p.[0].Value <- p1; p.[1].Value <- p2
@@ -486,6 +489,7 @@ type db =
     abstract member NonQuery: query<'A, NonQuery> * 'A -> Async<int>
     abstract member Insert: table:String * lens<'A> * seq<'A> -> Async<unit>
     abstract member Transaction: (db -> Async<'a>) -> Async<'a>
+    abstract member NoRetry: (db -> Async<'A>) -> Async<'A>
 
 type Db =
     static member Connect(provider: IProvider<_,_,'TXN>) = async {
@@ -524,6 +528,7 @@ type Db =
         let savepoints = Stack<String>()
         return { new db with
             member __.Dispose() = con.Dispose()
+            member db.NoRetry(f) = f db
             member __.NonQuery(q, a) = th.EnqueueWait (async {
                 let cmd = getCmd q
                 q.Set (cmd.Parameters, a)
@@ -590,6 +595,7 @@ type Db =
             return con }
         let mutable con : Result<db, exn> = Error (Failure "not connected")
         let mutable disposed : bool = false 
+        let mutable safeToRetry : bool = true
         let dispose () = match con with Error _ -> () | Ok o -> try o.Dispose () with _ -> ()
         let reconnect () = async {
             dispose () 
@@ -597,7 +603,7 @@ type Db =
                 let! db = connect ()
                 con <- Ok db
             with e -> con <- Error e }
-        let withDb (f:db -> Async<'a>) : Async<'a> = seq.EnqueueWait (async {
+        let withDb (f:db -> Async<'a>) = seq.EnqueueWait (async {
             if disposed then failwith "error attempted to use disposed IDb"
             let rec loop i = async {
                 match con with
@@ -608,7 +614,7 @@ type Db =
                         return! retry i e
                 | Error e -> return! retry i e }
             and retry i e = async { 
-                if i >= tries then return raise e 
+                if i >= tries || not safeToRetry then return raise e 
                 else
                     do! Async.Sleep 1000
                     do! reconnect ()
@@ -633,6 +639,10 @@ type Db =
             | None -> failwith "bug withRetries returned without initializing"
             | Some db -> db
         return { new db with
+            member __.NoRetry(f) = withDb (fun db -> async {
+                safeToRetry <- false
+                try return! f db
+                finally safeToRetry <- true })
             member __.Dispose() = disposed <- true; dispose () 
             member __.NonQuery(q, a) = withDb (fun db -> db.NonQuery(q, a))
             member __.Query(q, a) = withDb (fun db -> db.Query(q, a))

@@ -1,6 +1,6 @@
 ﻿(* Why?
 
-* There aren't any nice object relational mappers that are designed speficially for F# record and variant types.
+* There aren't any object relational mappers that are designed speficially for F# record and variant types.
 Records, options, and variants are a nice way to think about data, and they map fairly well to database
 types. 
 
@@ -100,6 +100,24 @@ type lens<'A> =
 
 type NonQuery
 
+// add this attribute to a static member of your
+// records of type
+//
+// ?prefix:String -> lens<'A>
+//
+// And Lens.create will call this method and use
+// the returned lens instead of processing the sub
+// record. You can use this functionality to define
+// virtual record fields and virtual db fields in just
+// one place such that they still work correctly when the
+// type is used as a sub record (e.g. say you're assembling
+// a large join and reading the results into a toplevel record
+// instead of a tuple)
+[<Class>]
+type CreateSubLensAttribute =
+    inherit Attribute
+    new: unit -> CreateSubLensAttribute
+
 [<Class>]
 type Lens =
     // Create a lens for type A
@@ -149,12 +167,17 @@ type Parameter =
     static member TimeSpan: name:String -> parameter<TimeSpan>
 
 [<Class>]
-type query<'A, 'B> = interface IDisposable
+type query<'A, 'B> = 
+    interface IDisposable
+    member Guid: Guid with get
+    member Sql: String with get
+    member Parameters: String[] with get
 
 [<Class>]
 type Query =
-    static member Create: sql:String * lens:lens<'B> -> query<unit, 'B>
-    static member Create: sql:String * lens:lens<'B> * p1:parameter<'P1> 
+    static member Create: sql:String * lens:lens<'B>
+        -> query<unit, 'B>
+    static member Create: sql:String * lens:lens<'B> * p1:parameter<'P1>
         -> query<'P1, 'B>
     static member Create: sql:String * lens:lens<'B> 
         * p1:parameter<'P1> * p2:parameter<'P2>
@@ -232,15 +255,18 @@ type db =
     // lives longer than the scope of the function.
     abstract member Transaction: (db -> Async<'a>) -> Async<'a>
 
+    // If this db would normally retry on error, turn that off
+    // for every operation done inside the closure passed to NoRetry
+    abstract member NoRetry: (unit -> Async<'A>) -> Async<'A>
+
+
 [<Class>]
 type Db =
     static member Connect: IProvider<_,_,_> -> Async<db>
 
-    // Given a provider, returns an db object that will retry
-    // on database errors a specified number of times. Using this object
-    // you must ensure that your database operations are idempotent, as
-    // they may be executed successfully more than once. All practical measures 
-    // will be taken to ensure this doesn't happen, however it cannot be guaranteed.
+    // This will return a db that will retry queries marked safetoretry
+    // on error. This may in rare cases result in multiple successful executions
+    // of a query, so ensure that queries marked safe to retry are idempotent
     static member WithRetries: IProvider<_,_,_>
         * ?log:(Exception -> unit) 
         * ?tries:int 
