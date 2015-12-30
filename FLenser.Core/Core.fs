@@ -8,6 +8,7 @@ open FSharpx.Control
 open Nessos.FsPickler
 open Nessos.FsPickler.Json
 open Microsoft.FSharp.Reflection
+open System.Reflection
 
 exception UnexpectedNull
 
@@ -121,7 +122,36 @@ type Lens =
         let vdf = 
             virtualRecordFields 
             |> Map.map (fun k v -> createParamSlot prefix (prefix + k), v)
-        let rec createInjectProject (typ : Type) (reader: obj -> obj) prefix =
+        let rec subRecord (typ: Type) reader prefix =
+            typ.GetMethods() 
+            |> Seq.filter (fun mi -> 
+                mi.CustomAttributes 
+                |> Seq.exists (fun a -> 
+                    a.AttributeType = typeof<CreateSubLensAttribute>)) 
+            |> Seq.toList
+            |> function
+                | [] -> createInjectProject typ reader prefix
+                | [mi] ->
+                    let pars = mi.GetParameters()
+                    let ret = mi.ReturnParameter.ParameterType
+                    if ret.GUID = typeof<lens<_>>.GUID 
+                       && mi.IsStatic
+                       && ret.GenericTypeArguments.[0] = typ
+                       && Array.length pars = 1
+                       && (let (p, ptyp) = pars.[0], pars.[0].ParameterType
+                           p.Name = "prefix"
+                           && ptyp.GUID = typeof<Option<_>>.GUID
+                           && ptyp.GenericTypeArguments.[0] = typeof<String>)
+                    then 
+                        let lens = mi.Invoke(null, [|(Some prefix) :> obj|]) :?> lens<_>
+                        ((fun p o -> lens.Inject(p, reader o)), lens.Project)
+                    else failwith 
+                            (sprintf "CreateSubLens marked method does not 
+                                      match the required signature
+                                      static member _: ?prefix:String -> lens<'A>
+                                      %A" mi)
+                | _ -> failwith (sprintf "multiple CreateSubLens in %A" typ)
+        and createInjectProject (typ : Type) (reader: obj -> obj) prefix =
             let option (typ : Type) f =
                 let ucases = FSharpType.GetUnionCases(typ)
                 let none = ucases |> Array.find (fun c -> c.Name = "None")
@@ -164,10 +194,10 @@ type Lens =
                             let o = project r name
                             mkSome [|o|]
                     prim inject project fld true)
-            let p (r: DbDataReader) name f = f (ord r name)
+            let getp (r: DbDataReader) name f = f (ord r name)
             let primitives = 
                 let stdInj _ (p: DbParameter) v = p.Value <- box v
-                let stdProj r n = p r n r.GetValue
+                let stdProj r n = getp r n r.GetValue
                 let std = (stdInj, stdProj)
                 [ typeof<Boolean>.GUID, std
                   typeof<Double>.GUID, std
@@ -178,7 +208,7 @@ type Lens =
                   typeof<int>.GUID, std
                   typeof<int64>.GUID, 
                     (stdInj, 
-                     fun r n -> p r n (fun i ->
+                     fun r n -> getp r n (fun i ->
                         try r.GetInt64 i
                         with _ -> int64 (r.GetInt32 i)
                         |> box)) ]
@@ -202,7 +232,7 @@ type Lens =
                 | None ->
                     match fld.PropertyType with
                     | typ when FSharpType.IsRecord(typ) ->
-                        createInjectProject typ reader (prefix + fld.Name + "$")
+                        subRecord typ reader (prefix + fld.Name + "$")
                     | typ when Map.containsKey typ.GUID primitives ->
                         let (inj, proj) = primitives.[typ.GUID]
                         prim (fun pars p r -> inj pars p (reader r)) proj fld false
@@ -213,19 +243,20 @@ type Lens =
                         primOpt reader inj proj fld
                     | typ when typ.IsArray && typ.HasElementType
                                && Map.containsKey (typ.GetElementType()).GUID primitives ->
-                        prim (fun _ p v -> p.Value <- reader v) (fun r n -> p r n r.GetValue) 
+                        prim (fun _ p v -> p.Value <- reader v) 
+                            (fun r n -> getp r n r.GetValue)
                             fld false
                     | typ when typ.GUID = typeof<Option<_>>.GUID
                                && let ityp = typ.GenericTypeArguments.[0]
                                   ityp.IsArray && ityp.HasElementType
                                   && Map.containsKey (ityp.GetElementType()).GUID primitives ->
                         primOpt reader (fun _ p v -> p.Value <- v) 
-                            (fun r n -> p r n r.GetValue) fld
+                            (fun r n -> getp r n r.GetValue) fld
                     | typ when (typ.GUID = typeof<Option<_>>.GUID
                                 && FSharpType.IsRecord(typ.GenericTypeArguments.[0])) ->
                         option typ (fun none some get tag mkNone mkSome rtyp ->
                             let prefix = prefix + fld.Name + "$"
-                            let (inject, project) = createInjectProject rtyp id prefix
+                            let (inject, project) = subRecord rtyp id prefix
                             let inject pars record =
                                 let opt = reader record
                                 let tag = tag opt
@@ -255,7 +286,7 @@ type Lens =
                                 let t = ifo.PropertyType
                                 let prefix = prefix + fld.Name + "$" + c.Name + "$"
                                 subrecprefixes <- prefix :: subrecprefixes
-                                Some (createInjectProject t reader prefix)
+                                Some (subRecord t reader prefix)
                             | _ -> failwith "bug"
                         let mk = 
                             FSharpType.GetUnionCases(typ) 
