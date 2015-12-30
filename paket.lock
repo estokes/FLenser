@@ -20,3 +20,4 @@ NUGET
     Newtonsoft.Json (8.0.1)
     Npgsql (3.0.4)
     NUnit (2.6.4)
+    System.Data.SQLite.Core (1.0.99)

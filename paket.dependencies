@@ -3,3 +3,4 @@ nuget FSharpx.Extras
 nuget FsPickler.Json
 nuget FsUnit
 nuget Npgsql
+nuget System.Data.SQLite.Core
