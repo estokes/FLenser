@@ -9,8 +9,8 @@ out of a relational database is still enough of an art that I don't want another
 in between me and SQL (e.g. Linq is cool, but I think ultimatly a burden).
 
 * I don't mind manually keeping the database schema in sync with the types. In fact for complex
-database this makes life easier as the schema evolves. I don't think tight coupling between the 
-database schema and the programming language types is as much of a win as it seems like it should  be. *)
+databases this makes life easier as the schema evolves. I don't think tight coupling between the 
+database schema and the programming language types is a big win. *)
 
 namespace FLenser.Core
 open System
@@ -256,9 +256,10 @@ type db =
     abstract member Transaction: (db -> Async<'a>) -> Async<'a>
 
     // If this db would normally retry on error, turn that off
-    // for every operation done inside the closure passed to NoRetry
-    abstract member NoRetry: (unit -> Async<'A>) -> Async<'A>
-
+    // for every operation done inside the closure.
+    // Within the closure you much used the passed in db object, and
+    // you must not save that object anywhere.
+    abstract member NoRetry: (db -> Async<'A>) -> Async<'A>
 
 [<Class>]
 type Db =
