@@ -535,7 +535,9 @@ type Db =
             let l = List<'B>(capacity = 4)
             let rec loop () = async {
                 let! res = r.ReadAsync() |> Async.AwaitTask
-                if not res then return l
+                if not res then
+                    if not r.IsClosed then r.Close ()
+                    return l
                 else
                     l.Add (lens.Project r)
                     return! loop () }
