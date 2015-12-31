@@ -531,24 +531,24 @@ type IProvider<'CON, 'PAR, 'TXN
     abstract member RollbackNested: 'CON * 'TXN * String -> unit
     abstract member CommitNested: 'CON * 'TXN * String -> unit
 
-type db =
+type asyncdb =
     inherit IDisposable
     abstract member Query: query<'A, 'B> * 'A -> Async<List<'B>>
     abstract member NonQuery: query<'A, NonQuery> * 'A -> Async<int>
     abstract member Insert: table:String * lens<'A> * seq<'A> -> Async<unit>
-    abstract member Transaction: (db -> Async<'a>) -> Async<'a>
-    abstract member NoRetry: (db -> Async<'A>) -> Async<'A>
+    abstract member Transaction: (asyncdb -> Async<'a>) -> Async<'a>
+    abstract member NoRetry: (asyncdb -> Async<'A>) -> Async<'A>
 
-type nonasyncdb =
+type db =
     inherit IDisposable
     abstract member Query: query<'A, 'B> * 'A -> List<'B>
     abstract member NonQuery: query<'A, NonQuery> * 'A -> int
     abstract member Insert: table:String * lens<'A> * seq<'A> -> unit
-    abstract member Transaction: (nonasyncdb -> 'a) -> 'a
-    abstract member NoRetry: (nonasyncdb -> 'A) -> 'A
+    abstract member Transaction: (db -> 'a) -> 'a
+    abstract member NoRetry: (db -> 'A) -> 'A
 
 type Db =
-    static member ConnectNonAsync(provider: IProvider<_, _, 'TXN>) = 
+    static member Connect(provider: IProvider<_, _, 'TXN>) = 
         let con = provider.Connect ()
         let prepared = Dictionary<Guid, DbCommand>()
         let preparedInserts = 
@@ -582,7 +582,7 @@ type Db =
                 cmd
         let txn : ref<Option<'TXN>> = ref None
         let savepoints = Stack<String>()
-        { new nonasyncdb with
+        { new db with
             member __.Dispose() = con.Dispose()
             member db.NoRetry(f) = f db
             member __.NonQuery(q, a) = lock con (fun () -> 
@@ -639,7 +639,7 @@ type Db =
                     res
                 with e -> rollback (); raise e }
 
-    static member Connect(provider: IProvider<_,_,'TXN>) = async {
+    static member ConnectAsync(provider: IProvider<_,_,'TXN>) = async {
         let! con = provider.ConnectAsync ()
         let th = Throttle(1, Async.Start)
         let prepared = Dictionary<Guid, DbCommand>()
@@ -675,7 +675,7 @@ type Db =
                 cmd
         let txn : ref<Option<'TXN>> = ref None
         let savepoints = Stack<String>()
-        return { new db with
+        return { new asyncdb with
             member __.Dispose() = con.Dispose()
             member db.NoRetry(f) = f db
             member __.NonQuery(q, a) = th.EnqueueWait (async {
@@ -737,12 +737,12 @@ type Db =
         let log = defaultArg log ignore
         let tries = defaultArg tries 3
         let seq = Throttle(1, Async.Start)
-        let mutable lastGoodDb : Option<db> = None
+        let mutable lastGoodDb : Option<asyncdb> = None
         let connect () = async {
-            let! con = Db.Connect(provider)
+            let! con = Db.ConnectAsync(provider)
             lastGoodDb <- Some con
             return con }
-        let mutable con : Result<db, exn> = Error (Failure "not connected")
+        let mutable con : Result<asyncdb, exn> = Error (Failure "not connected")
         let mutable disposed : bool = false 
         let mutable safeToRetry : bool = true
         let dispose () = match con with Error _ -> () | Ok o -> try o.Dispose () with _ -> ()
@@ -752,7 +752,7 @@ type Db =
                 let! db = connect ()
                 con <- Ok db
             with e -> con <- Error e }
-        let withDb (f:db -> Async<'a>) = seq.EnqueueWait (async {
+        let withDb f = seq.EnqueueWait (async {
             if disposed then failwith "error attempted to use disposed IDb"
             let rec loop i = async {
                 match con with
@@ -787,7 +787,7 @@ type Db =
             match lastGoodDb with
             | None -> failwith "bug withRetries returned without initializing"
             | Some db -> db
-        return { new db with
+        return { new asyncdb with
             member __.NoRetry(f) = withDb (fun db -> async {
                 safeToRetry <- false
                 try return! f db

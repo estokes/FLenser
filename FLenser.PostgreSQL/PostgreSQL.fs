@@ -11,10 +11,15 @@ open NpgsqlTypes
 let create (csb: NpgsqlConnectionStringBuilder) =
     let mutable savepoint = 0
     { new IProvider<_,_,_> with
-        member __.Connect() = async {
+        member __.ConnectAsync() = async {
             let con = new NpgsqlConnection(csb)
             do! con.OpenAsync() |> Async.AwaitTask
             return con }
+
+        member __.Connect() =
+            let con = new NpgsqlConnection(csb)
+            con.Open()
+            con
 
         member __.CreateParameter(name) = 
             let p = NpgsqlParameter()
@@ -25,7 +30,7 @@ let create (csb: NpgsqlConnectionStringBuilder) =
 
         member __.Dispose() = ()
 
-        member __.InsertObject(con, tbl, columns) = (fun items -> async {
+        member __.InsertObject(con, tbl, columns) = (fun items -> 
             if not (Seq.isEmpty items) then
                 let sql = 
                     sprintf "copy %s(%s) from stdin" tbl (String.Join (", ", columns))
@@ -45,7 +50,15 @@ let create (csb: NpgsqlConnectionStringBuilder) =
                             | :? String as x -> w.Write<String>(x, NpgsqlDbType.Text)
                             | :? TimeSpan as x -> w.Write<TimeSpan>(x, NpgsqlDbType.Interval)
                             | :? array<byte> as x -> w.Write<byte[]>(x, NpgsqlDbType.Bytea)
-                            | t -> failwith (sprintf "unknown type %A" t)) })
+                            | t -> failwith (sprintf "unknown type %A" t)))
+
+        member p.InsertObjectAsync(con, tbl, columns) = 
+            let f = p.InsertObject(con, tbl, columns)
+            (fun items -> async {
+                let! res = Async.StartChild(async {
+                    do! Async.SwitchToThreadPool()
+                    f items })
+                return! res })
 
         member __.HasNestedTransactions = true
         member __.NestedTransaction(con, t) =

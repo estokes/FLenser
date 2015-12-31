@@ -88,14 +88,21 @@ let raw () =
         r.Close()
     con
 
-let setup () = async {
-    let cs = SQLiteConnectionStringBuilder("DataSource=:memory:")
-    cs.JournalMode <- SQLiteJournalModeEnum.Off
-    cs.CacheSize <- 0
-    let! db = Db.Connect(FLenser.SQLite.Provider.create cs)
+let cs = SQLiteConnectionStringBuilder("DataSource=:memory:")
+cs.JournalMode <- SQLiteJournalModeEnum.Off
+cs.CacheSize <- 0
+
+let setupasync () = async {
+    let! db = Db.ConnectAsync(FLenser.SQLite.Provider.create cs)
     let! _ = db.NonQuery(init, ())
     do! db.Transaction (fun db -> db.Insert("foo", lens, items))
     return db }
+
+let setup () = 
+    let db = Db.Connect(FLenser.SQLite.Provider.create cs)
+    db.NonQuery(init, ()) |> ignore
+    db.Transaction(fun db -> db.Insert("foo", lens, items))
+    db
 
 [<EntryPoint>]
 let main argv = 
@@ -103,7 +110,7 @@ let main argv =
     cs.JournalMode <- SQLiteJournalModeEnum.Off
     cs.CacheSize <- 0
     async {
-        let! db = setup ()
+        let! db = setupasync ()
         let! i1 = db.Query(byItem, "foo")
         if i1.[0] <> List.head items then failwith (sprintf "0: %A" i1.[0])
         let! _ = db.NonQuery(changeBar, ("hello", 0L))

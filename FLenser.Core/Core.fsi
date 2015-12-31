@@ -239,7 +239,7 @@ type IProvider<'CON, 'PAR, 'TXN
     abstract member RollbackNested: 'CON * 'TXN * String -> unit
     abstract member CommitNested: 'CON * 'TXN * String -> unit
 
-type db =
+type asyncdb =
     inherit IDisposable
 
     // Execute a query, returning it's result
@@ -257,30 +257,30 @@ type db =
     // In the transaction you must use ONLY the db object passed
     // in to you. You must not keep a reference to this object that
     // lives longer than the scope of the function.
-    abstract member Transaction: (db -> Async<'a>) -> Async<'a>
+    abstract member Transaction: (asyncdb -> Async<'a>) -> Async<'a>
 
     // If this db would normally retry on error, turn that off
     // for every operation done inside the closure.
     // Within the closure you much used the passed in db object, and
     // you must not save that object anywhere.
-    abstract member NoRetry: (db -> Async<'A>) -> Async<'A>
+    abstract member NoRetry: (asyncdb -> Async<'A>) -> Async<'A>
 
-type nonasyncdb =
+type db =
     inherit IDisposable
     abstract member Query: query<'A, 'B> * 'A -> List<'B>
     abstract member NonQuery: query<'A, NonQuery> * 'A -> int
     abstract member Insert: table:String * lens<'A> * seq<'A> -> unit
-    abstract member Transaction: (nonasyncdb -> 'a) -> 'a
-    abstract member NoRetry: (nonasyncdb -> 'A) -> 'A
+    abstract member Transaction: (db -> 'a) -> 'a
+    abstract member NoRetry: (db -> 'A) -> 'A
 
 [<Class>]
 type Db =
-    static member Connect: IProvider<_,_,_> -> Async<db>
-
     // Since most db operations take a long time this should be used
     // with caution. However if you have an in memory db it can reduce
-    // overhead significantly
-    static member ConnectNonAsync: IProvider<_,_,_> -> nonasyncdb
+    // overhead significantly. Most users will want ConnectAsync.
+    static member Connect: IProvider<_,_,_> -> db
+
+    static member ConnectAsync: IProvider<_,_,_> -> Async<asyncdb>
 
     // This will return a db that will retry queries marked safetoretry
     // on error. This may in rare cases result in multiple successful executions
@@ -288,4 +288,4 @@ type Db =
     static member WithRetries: IProvider<_,_,_>
         * ?log:(Exception -> unit) 
         * ?tries:int 
-        -> Async<db>
+        -> Async<asyncdb>
