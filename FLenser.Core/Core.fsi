@@ -222,13 +222,17 @@ type Query =
 // and should be easy to derive from such an implementation
 type IProvider<'CON, 'PAR, 'TXN
                 when 'CON :> DbConnection
+                 and 'CON : not struct
                  and 'PAR :> DbParameter
                  and 'TXN :> DbTransaction> =
     inherit IDisposable
-    abstract member Connect: unit -> Async<'CON>
+    abstract member ConnectAsync: unit -> Async<'CON>
+    abstract member Connect: unit -> 'CON
     abstract member CreateParameter: name:String -> 'PAR
-    abstract member InsertObject: 'CON * table:String * columns:String[]
+    abstract member InsertObjectAsync: 'CON * table:String * columns:String[]
         -> (seq<obj[]> -> Async<unit>)
+    abstract member InsertObject: 'CON * table:String * columns:String[]
+        -> (seq<obj[]> -> unit)
     abstract member HasNestedTransactions: bool
     abstract member BeginTransaction: 'CON -> 'TXN
     abstract member NestedTransaction: 'CON * 'TXN -> String
@@ -261,9 +265,22 @@ type db =
     // you must not save that object anywhere.
     abstract member NoRetry: (db -> Async<'A>) -> Async<'A>
 
+type nonasyncdb =
+    inherit IDisposable
+    abstract member Query: query<'A, 'B> * 'A -> List<'B>
+    abstract member NonQuery: query<'A, NonQuery> * 'A -> int
+    abstract member Insert: table:String * lens<'A> * seq<'A> -> unit
+    abstract member Transaction: (nonasyncdb -> 'a) -> 'a
+    abstract member NoRetry: (nonasyncdb -> 'A) -> 'A
+
 [<Class>]
 type Db =
     static member Connect: IProvider<_,_,_> -> Async<db>
+
+    // Since most db operations take a long time this should be used
+    // with caution. However if you have an in memory db it can reduce
+    // overhead significantly
+    static member ConnectNonAsync: IProvider<_,_,_> -> nonasyncdb
 
     // This will return a db that will retry queries marked safetoretry
     // on error. This may in rare cases result in multiple successful executions

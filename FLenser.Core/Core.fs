@@ -205,12 +205,25 @@ type Lens =
                   typeof<DateTime>.GUID, std
                   typeof<TimeSpan>.GUID, std
                   typeof<byte[]>.GUID, std
-                  typeof<int>.GUID, std
+                  typeof<int>.GUID, 
+                    (stdInj,
+                     fun r n -> getp r n (fun i ->
+                        match r.GetValue i with
+                        | :? int32 as x -> x
+                        | :? byte as x -> int32 x
+                        | :? int16 as x -> int32 x
+                        | :? int64 as x -> int32 x
+                        | o -> failwith (sprintf "cannot convert %A to int32" o)
+                        |> box))
                   typeof<int64>.GUID, 
                     (stdInj, 
                      fun r n -> getp r n (fun i ->
-                        try r.GetInt64 i
-                        with _ -> int64 (r.GetInt32 i)
+                        match r.GetValue i with
+                        | :? int64 as x -> x
+                        | :? byte as x -> int64 x
+                        | :? int16 as x -> int64 x
+                        | :? int32 as x -> int64 x
+                        | o -> failwith (sprintf "cannot convert %A to int64" o)
                         |> box)) ]
                 |> Map.ofList
             let fields = 
@@ -501,13 +514,17 @@ type Query private () =
 
 type IProvider<'CON, 'PAR, 'TXN
                 when 'CON :> DbConnection
+                 and 'CON : not struct
                  and 'PAR :> DbParameter
                  and 'TXN :> DbTransaction> =
     inherit IDisposable
-    abstract member Connect: unit -> Async<'CON>
+    abstract member ConnectAsync: unit -> Async<'CON>
+    abstract member Connect: unit -> 'CON
     abstract member CreateParameter: name:String -> 'PAR
-    abstract member InsertObject: 'CON * table:String * columns:String[]
+    abstract member InsertObjectAsync: 'CON * table:String * columns:String[]
         -> (seq<obj[]> -> Async<unit>)
+    abstract member InsertObject: 'CON * table:String * columns:String[]
+        -> (seq<obj[]> -> unit)
     abstract member HasNestedTransactions: bool
     abstract member BeginTransaction: 'CON -> 'TXN
     abstract member NestedTransaction: 'CON * 'TXN -> String
@@ -522,9 +539,108 @@ type db =
     abstract member Transaction: (db -> Async<'a>) -> Async<'a>
     abstract member NoRetry: (db -> Async<'A>) -> Async<'A>
 
+type nonasyncdb =
+    inherit IDisposable
+    abstract member Query: query<'A, 'B> * 'A -> List<'B>
+    abstract member NonQuery: query<'A, NonQuery> * 'A -> int
+    abstract member Insert: table:String * lens<'A> * seq<'A> -> unit
+    abstract member Transaction: (nonasyncdb -> 'a) -> 'a
+    abstract member NoRetry: (nonasyncdb -> 'A) -> 'A
+
 type Db =
+    static member ConnectNonAsync(provider: IProvider<_, _, 'TXN>) = 
+        let con = provider.Connect ()
+        let prepared = Dictionary<Guid, DbCommand>()
+        let preparedInserts = 
+            Dictionary<Guid, Dictionary<Guid, DbParameter>
+                             * DbParameter[]
+                             * (seq<obj[]> -> unit)>()
+        let read (lens : lens<'B>) (r: DbDataReader) =
+            let l = List<'B>(capacity = 4)
+            let rec loop () =
+                if not (r.Read ()) then
+                    if not r.IsClosed then r.Close ()
+                    l
+                else
+                    l.Add (lens.Project r)
+                    loop ()
+            loop ()
+        let getCmd (q: query<_,_>)= 
+            match prepared.TryFind q.Guid with
+            | Some cmd -> cmd 
+            | None ->
+                let cmd = con.CreateCommand()
+                let pars = 
+                    q.Parameters |> Array.map (fun name -> 
+                        (provider.CreateParameter name :> DbParameter))
+                cmd.Connection <- con
+                cmd.CommandText <- q.Sql 
+                cmd.Parameters.AddRange pars
+                cmd.Prepare ()
+                prepared.[q.Guid] <- cmd
+                q.PushDispose (fun () -> ignore (prepared.Remove q.Guid))
+                cmd
+        let txn : ref<Option<'TXN>> = ref None
+        let savepoints = Stack<String>()
+        { new nonasyncdb with
+            member __.Dispose() = con.Dispose()
+            member db.NoRetry(f) = f db
+            member __.NonQuery(q, a) = lock con (fun () -> 
+                let cmd = getCmd q
+                q.Set (cmd.Parameters, a)
+                cmd.ExecuteNonQuery())
+            member __.Query(q, a) = lock con (fun () -> 
+                let cmd = getCmd q
+                q.Set (cmd.Parameters, a)
+                let r = cmd.ExecuteReader()
+                read q.Lens r)
+            member __.Insert(table, lens: lens<'A>, a: seq<'A>) = 
+                let (pars, pararray, run) = 
+                    match preparedInserts.TryFind lens.Guid with
+                    | Some x -> x
+                    | None ->
+                        let pars = 
+                            lens.CreateParams (fun name -> 
+                                (provider.CreateParameter name :> DbParameter))
+                        let pararray = pars |> Seq.map (fun kv -> kv.Value) |> Seq.toArray
+                        let run = 
+                            provider.InsertObject(con, table, 
+                                pararray |> Array.map (fun p -> p.ParameterName))
+                        preparedInserts.[lens.Guid] <- (pars, pararray, run)
+                        (pars, pararray, run)
+                let a = a |> Seq.map (fun a ->
+                    lens.Inject(pars, a)
+                    pararray |> Array.map (fun p -> p.Value))
+                run a
+            member db.Transaction(f) =
+                let (rollback, commit) =
+                    lock txn (fun () -> 
+                        let std (t: DbTransaction) =
+                            let rst () = txn := None; savepoints.Clear ()
+                            (fun () -> lock txn (fun () -> rst (); t.Rollback ())),
+                            (fun () -> lock txn (fun () -> rst (); t.Commit ()))
+                        match !txn with
+                        | None ->
+                            let t = provider.BeginTransaction con
+                            txn := Some t
+                            std t
+                        | Some t ->
+                            if not provider.HasNestedTransactions then std t
+                            else
+                                let name = provider.NestedTransaction(con, t)
+                                savepoints.Push name
+                                (fun () -> lock txn (fun () -> 
+                                    provider.RollbackNested(con, t, savepoints.Pop ()))),
+                                (fun () -> lock txn (fun () ->
+                                    provider.CommitNested(con, t, savepoints.Pop()))))
+                try
+                    let res = f db
+                    commit ()
+                    res
+                with e -> rollback (); raise e }
+
     static member Connect(provider: IProvider<_,_,'TXN>) = async {
-        let! con = provider.Connect ()
+        let! con = provider.ConnectAsync ()
         let th = Throttle(1, Async.Start)
         let prepared = Dictionary<Guid, DbCommand>()
         let preparedInserts = 
@@ -582,7 +698,7 @@ type Db =
                                 (provider.CreateParameter name :> DbParameter))
                         let pararray = pars |> Seq.map (fun kv -> kv.Value) |> Seq.toArray
                         let run = 
-                            provider.InsertObject(con, table, 
+                            provider.InsertObjectAsync(con, table, 
                                 pararray |> Array.map (fun p -> p.ParameterName))
                         preparedInserts.[lens.Guid] <- (pars, pararray, run)
                         (pars, pararray, run)
