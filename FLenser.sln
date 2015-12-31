@@ -14,6 +14,8 @@ Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "FLenser.PostgreSQL", "FLens
 EndProject
 Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "FLenser.SQLite", "FLenser.SQLite\FLenser.SQLite.fsproj", "{9C985372-4C5C-44AA-B973-FFC0CC78A547}"
 EndProject
+Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "Test", "Test\Test.fsproj", "{9A2BB53C-81C0-4A0D-9632-D068B9CB4817}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -32,6 +34,10 @@ Global
 		{9C985372-4C5C-44AA-B973-FFC0CC78A547}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{9C985372-4C5C-44AA-B973-FFC0CC78A547}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{9C985372-4C5C-44AA-B973-FFC0CC78A547}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9A2BB53C-81C0-4A0D-9632-D068B9CB4817}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9A2BB53C-81C0-4A0D-9632-D068B9CB4817}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9A2BB53C-81C0-4A0D-9632-D068B9CB4817}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9A2BB53C-81C0-4A0D-9632-D068B9CB4817}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
