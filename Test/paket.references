@@ -1,1 +1,4 @@
-﻿System.Data.SQLite
+﻿System.Data.SQLite.Core
+FsUnit
+NUnit
+
