@@ -17,8 +17,10 @@ let create (cs: SQLiteConnectionStringBuilder) =
             let pars = columns |> Array.map (fun n -> SQLiteParameter(n))
             let parnames = columns |> Array.map (fun n -> ":" + n)
             let sql = 
-                "INSERT INTO " + table + " VALUES (" + String.Join(",", parnames) + ")"
+                sprintf "INSERT INTO %s (%s) VALUES (%s)"
+                    table (String.Join(", ", columns)) (String.Join(", ", parnames))
             let cmd = new SQLiteCommand(sql, con)
+            cmd.Parameters.AddRange pars
             cmd.Prepare ()
             fun items -> async {
                 do! items 

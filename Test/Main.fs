@@ -33,12 +33,12 @@ let init =
             (item text not null, 
              id bigint not null, 
              thing int not null, 
-             thing$a$foo int not null, 
-             thing$a$bar text not null, 
+             thing$a$foo int, 
+             thing$a$bar text, 
              thing$a$baz double precision,
-             thing$b$oof timestamp not null,
+             thing$b$oof timestamp,
              thing$b$rab interval,
-             thing$b$zab json not null)""", 
+             thing$b$zab json)""", 
          Lens.NonQuery)
 
 [<EntryPoint>]

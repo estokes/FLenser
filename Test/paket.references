@@ -1,4 +1,4 @@
 ﻿System.Data.SQLite.Core
 FsUnit
 NUnit
-
+FsPickler.Json
