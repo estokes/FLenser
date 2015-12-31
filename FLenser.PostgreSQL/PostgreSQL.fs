@@ -1,4 +1,4 @@
-﻿module FLenser.Postgres
+﻿module FLenser.PostgreSQL.Provider
 open System
 open System.Collections.Generic
 open System.Data
@@ -8,9 +8,9 @@ open FLenser.Core
 open Npgsql
 open NpgsqlTypes
 
-let provider (csb: NpgsqlConnectionStringBuilder) =
+let create (csb: NpgsqlConnectionStringBuilder) =
     let mutable savepoint = 0
-    { new IProvider<NpgsqlConnection, NpgsqlParameter, NpgsqlTransaction> with
+    { new IProvider<_,_,_> with
         member __.Connect() = async {
             let con = new NpgsqlConnection(csb)
             do! con.OpenAsync() |> Async.AwaitTask

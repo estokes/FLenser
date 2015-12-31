@@ -1,6 +1,7 @@
-﻿module FLenser.PostgreSQL
+﻿module FLenser.PostgreSQL.Provider
 open System
 open Npgsql
 open FLenser.Core
 
-val provider: NpgsqlConnectionStringBuilder -> IProvider<_,_,_>
+val create: NpgsqlConnectionStringBuilder 
+    -> IProvider<NpgsqlConnection,NpgsqlParameter,NpgsqlTransaction>
