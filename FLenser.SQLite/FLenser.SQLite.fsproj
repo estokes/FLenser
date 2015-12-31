@@ -55,6 +55,7 @@
     <Compile Include="SQLite.fsi" />
     <Compile Include="SQLite.fs" />
     <None Include="paket.references" />
+    <None Include="FLenser.SQLite.fsproj.paket.template" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="mscorlib" />

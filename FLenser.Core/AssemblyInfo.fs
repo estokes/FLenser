@@ -10,7 +10,7 @@ open System.Runtime.InteropServices
 [<assembly: AssemblyTitle("FLenser.Core")>]
 [<assembly: AssemblyDescription("F# focused ORM, core components")>]
 [<assembly: AssemblyConfiguration("")>]
-[<assembly: AssemblyCompany("")>]
+[<assembly: AssemblyCompany("Eric Stokes")>]
 [<assembly: AssemblyProduct("FLenser.Core")>]
 [<assembly: AssemblyCopyright("Copyright © Eric Stokes 2015")>]
 [<assembly: AssemblyTrademark("")>]

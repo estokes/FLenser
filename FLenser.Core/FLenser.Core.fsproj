@@ -54,6 +54,7 @@
     <Compile Include="Core.fsi" />
     <Compile Include="Core.fs" />
     <None Include="paket.references" />
+    <None Include="FLenser.Core.fsproj.paket.template" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="mscorlib" />

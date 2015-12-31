@@ -1,0 +1,4 @@
+﻿type project
+licenseUrl http://www.gnu.org/licenses/lgpl.html
+DESCRIPTION
+    A light object relational mapper for F# record types. PostgreSQL provider.

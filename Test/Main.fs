@@ -1,4 +1,21 @@
-﻿module FLenser.Test
+﻿(*
+    FLenser, a simple ORM for F#
+    Copyright (C) 2015 Eric Stokes 
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*)
+module FLenser.Test
 open System
 open System.Collections.Generic
 open System.Data.SQLite
@@ -60,14 +77,15 @@ let main argv =
             Query.Create("select * from foo where item = :p1", 
                 lens, Parameter.String("p1"))
         let! i1 = db.Query(byItem, "foo")
-        assert (i1.[0] = List.head items)
+        if i1.[0] <> List.head items then failwith (sprintf "0: %A" i1.[0])
         let changeBar = 
             Query.Create("update foo set thing$a$bar = :p1 where id = :p2", 
                 Lens.NonQuery, Parameter.String("p1"), Parameter.Int64("p2"))
         let! _ = db.NonQuery(changeBar, ("hello", 0L))
         let! i2 = db.Query(byItem, "foo")
-        assert (i2.[0] <> List.head items)
-        assert (i2.[0] = {(List.head items) with 
-                            thing = A {foo = 42; bar = "hello"; baz = None}})
+        if i2.[0] = List.head items then failwith (sprintf "1: %A" i2.[0])
+        if i2.[0] <> {(List.head items) with 
+                            thing = A {foo = 42; bar = "hello"; baz = None}}
+        then failwith (sprintf "2: %A" i2.[0])
     } |> Async.RunSynchronously
     0

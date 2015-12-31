@@ -10,7 +10,7 @@ open System.Runtime.InteropServices
 [<assembly: AssemblyTitle("FLenser.SQLite")>]
 [<assembly: AssemblyDescription("")>]
 [<assembly: AssemblyConfiguration("")>]
-[<assembly: AssemblyCompany("")>]
+[<assembly: AssemblyCompany("Eric Stokes")>]
 [<assembly: AssemblyProduct("FLenser.SQLite")>]
 [<assembly: AssemblyCopyright("Copyright ©  2015")>]
 [<assembly: AssemblyTrademark("")>]

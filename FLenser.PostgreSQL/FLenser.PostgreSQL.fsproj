@@ -55,6 +55,7 @@
     <Compile Include="PostgreSQL.fsi" />
     <Compile Include="PostgreSQL.fs" />
     <None Include="paket.references" />
+    <None Include="FLenser.PostgreSQL.fsproj.paket.template" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="mscorlib" />
