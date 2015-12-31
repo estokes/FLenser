@@ -30,33 +30,40 @@ type lens<'A> internal (createParams: (String -> DbParameter)
 type NonQuery = {nothing: unit}
 
 module Utils =
-    type Throttle(maxConcurrentJobs: int, start: Async<_> -> unit) = 
-        let waiting = BlockingQueueAgent<_>(max maxConcurrentJobs 50)
-        let running = BlockingQueueAgent<_>(maxConcurrentJobs)
+    type Sequencer() =
+        let mutable stop = false
+        let mutable available = AsyncResultCell()
+        let jobs = Queue<Async<Unit>>()
         let rec loop () = async {
-            let! (job, finished) = waiting.AsyncGet ()
-            do! running.AsyncAdd (())
-            start job
-            async { do! finished
-                    do! running.AsyncGet () }
-            |> Async.Start
-            return! loop () }
-        do loop () |> Async.Start
-        member t.EnqueueWait(job: Async<'A>) : Async<'A> = async { 
-            let! res = t.Enqueue job
-            return! res }
-        member __.Enqueue(job: Async<'A>) : Async<Async<'A>> = async {
-            let result = AsyncResultCell()
-            let job = async {
-                try
-                    let! res = job
-                    result.RegisterResult (AsyncOk res)
-                with e -> result.RegisterResult (AsyncException e) }
-            let finished = async {
-                try do! result.AsyncResult |> Async.Ignore
-                with _ -> () }
-            do! waiting.AsyncAdd ((job, finished))
-            return result.AsyncResult }
+            if stop then ()
+            else
+                do! available.AsyncResult
+                let job =
+                    lock jobs (fun () -> 
+                        if jobs.Count = 0 then
+                            available <- AsyncResultCell()
+                            None
+                        else Some (jobs.Dequeue ()))
+                match job with
+                | None -> return! loop ()
+                | Some job ->
+                    do! job 
+                    return! loop () }
+        do loop () |> Async.StartImmediate
+        interface IDisposable with member __.Dispose() = stop <- true
+        member __.Enqueue(job : Async<'A>) : Async<'A> =
+            if stop then failwith "The sequencer is stopped!"
+            let res = AsyncResultCell()
+            lock jobs (fun () ->
+                if jobs.Count = 0 then available.RegisterResult (AsyncOk ())
+                let job = async {
+                    try
+                        let! z = job
+                        res.RegisterResult (AsyncOk z)
+                    with e -> 
+                        return res.RegisterResult (AsyncException e) }
+                jobs.Enqueue(job))
+            res.AsyncResult
 
     type Result<'A, 'B> =
         | Ok of 'A
@@ -641,7 +648,7 @@ type Db =
 
     static member ConnectAsync(provider: IProvider<_,_,'TXN>) = async {
         let! con = provider.ConnectAsync ()
-        let th = Throttle(1, Async.Start)
+        let th = new Sequencer()
         let prepared = Dictionary<Guid, DbCommand>()
         let preparedInserts = 
             Dictionary<Guid, Dictionary<Guid, DbParameter>
@@ -676,19 +683,21 @@ type Db =
         let txn : ref<Option<'TXN>> = ref None
         let savepoints = Stack<String>()
         return { new asyncdb with
-            member __.Dispose() = con.Dispose()
+            member __.Dispose() = 
+                (th :> IDisposable).Dispose()
+                con.Dispose()
             member db.NoRetry(f) = f db
-            member __.NonQuery(q, a) = th.EnqueueWait (async {
+            member __.NonQuery(q, a) = th.Enqueue (async {
                 let cmd = getCmd q
                 q.Set (cmd.Parameters, a)
                 let! i = cmd.ExecuteNonQueryAsync() |> Async.AwaitTask
                 return i })
-            member __.Query(q, a) = th.EnqueueWait(async {
+            member __.Query(q, a) = th.Enqueue(async {
                 let cmd = getCmd q
                 q.Set (cmd.Parameters, a)
                 let! r = cmd.ExecuteReaderAsync() |> Async.AwaitTask
                 return! read q.Lens r })
-            member __.Insert(table, lens: lens<'A>, a: seq<'A>) = 
+            member __.Insert(table, lens: lens<'A>, a: seq<'A>) = th.Enqueue(async {
                 let (pars, pararray, run) = 
                     match preparedInserts.TryFind lens.Guid with
                     | Some x -> x
@@ -705,7 +714,7 @@ type Db =
                 let a = a |> Seq.map (fun a ->
                     lens.Inject(pars, a)
                     pararray |> Array.map (fun p -> p.Value))
-                run a
+                return! run a })
             member db.Transaction(f) = async {
                 let (rollback, commit) =
                     lock txn (fun () -> 
@@ -736,7 +745,7 @@ type Db =
     static member WithRetries(provider: IProvider<_,_,_>, ?log, ?tries) = async {
         let log = defaultArg log ignore
         let tries = defaultArg tries 3
-        let seq = Throttle(1, Async.Start)
+        let seq = new Sequencer()
         let mutable lastGoodDb : Option<asyncdb> = None
         let connect () = async {
             let! con = Db.ConnectAsync(provider)
@@ -752,7 +761,7 @@ type Db =
                 let! db = connect ()
                 con <- Ok db
             with e -> con <- Error e }
-        let withDb f = seq.EnqueueWait (async {
+        let withDb f = seq.Enqueue (async {
             if disposed then failwith "error attempted to use disposed IDb"
             let rec loop i = async {
                 match con with
@@ -782,7 +791,7 @@ type Db =
             | Error e -> return raise e
             | Ok _ -> () }
         // make sure if we can't connect we fail early
-        do! seq.EnqueueWait(loop 0)
+        do! seq.Enqueue(loop 0)
         let getLastGoodDb () = 
             match lastGoodDb with
             | None -> failwith "bug withRetries returned without initializing"
@@ -792,7 +801,10 @@ type Db =
                 safeToRetry <- false
                 try return! f db
                 finally safeToRetry <- true })
-            member __.Dispose() = disposed <- true; dispose () 
+            member __.Dispose() = 
+                (seq :> IDisposable).Dispose ()
+                disposed <- true
+                dispose () 
             member __.NonQuery(q, a) = withDb (fun db -> db.NonQuery(q, a))
             member __.Query(q, a) = withDb (fun db -> db.Query(q, a))
             member __.Insert(t, l, a) = withDb (fun db -> db.Insert(t, l, a))
