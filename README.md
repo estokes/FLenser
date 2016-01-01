@@ -1,4 +1,11 @@
 # FLenser
+
+## Installation
+
+NuGet Packages are avaliable. There is a package for the core FLenser.Core, as well
+as a package for each database provider, e.g. FLenser.PostgreSQL.
+
+## Example with SQLite
 A lightweight object relational mapper for F# record types.
 
     type a = 
@@ -30,21 +37,12 @@ database columns.
 
     let init =
         Query.Create
-            ("""create table foo 
-                (item text not null, 
-                 id bigint not null, 
-                 thing int not null, 
-                 thing$a$foo int, 
-                 thing$a$bar text, 
-                 thing$a$baz double precision,
-                 thing$b$oof timestamp,
-                 thing$b$rab interval,
-                 thing$b$zab json)""", 
+            (sprintf "create table foo (%s)" (String.Join(", ", lens.ColumnNames)),
              Lens.NonQuery)
 
     let cs = SQLiteConnectionStringBuilder("DataSource=:memory:")
-    let! db = Db.Connect(FLenser.SQLite.Provider.create cs)
-    let! _ = db.NonQuery(init, ())
+    let db = Db.Connect(FLenser.SQLite.Provider.create cs)
+    let _ = db.NonQuery(init, ())
     let items =
        [{item = "foo"; id = 0L; thing = A {foo = 42; bar = "42"; baz = None}}
         {item = "bar"; id = 1L; thing = A {foo = 54; bar = "54"; baz = Some 12.932}}
@@ -53,6 +51,28 @@ database columns.
                                            zab = set [1;2;3;4]}}
         {item = "zam"; id = 23423429999L; thing = C}
         {item = "zeltch"; id = 3L; thing = D}]
-    do! db.Transaction (fun db -> db.Insert("foo", lens, items))
+    db.Transaction (fun db -> db.Insert("foo", lens, items))
     
-We can then create an in memory SQLite database, and add a table to it that corresponds 
+Here we create an in memory SQLite database, add a table, and some items to it. Because
+SQLite uses manifest typing, we don't need to worry about column types. This won't be true
+in other databases. 
+
+    let byItem = 
+        Query.Create("select * from foo where item = :p1", 
+            lens, Parameter.String("p1"))
+    
+    let l = db.Query(byItem, "bar")
+
+    val it : List<t> = seq [{item = "bar";
+                             id = 1L;
+                             thing = A {foo = 54;
+                                        bar = "54";
+                                        baz = Some 12.932;};}]
+
+Here we create a query to look up objects by the 'item' column, and then execute it. SQLite is
+very fast, and while the Lens infrastructure does impose some overhead, the above query runs in
+a little under 20us. That's about 20 times slower than a Dictionary lookup, however if you need
+to run complex queries on your objects using SQLite as an in memory store could save you quite a lot
+of work. Also, since objects in SQLite are outside the managed heap, the garbage collector won't
+look at them anymore, which is potentially very useful for infrequently used objects.
+

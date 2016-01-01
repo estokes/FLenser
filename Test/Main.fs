@@ -65,30 +65,6 @@ let changeBar =
     Query.Create("update foo set thing$a$bar = :p1 where id = :p2", 
         Lens.NonQuery, Parameter.String("p1"), Parameter.Int64("p2"))
 
-let raw () = 
-    let cs = SQLiteConnectionStringBuilder("DataSource=:memory:")
-    cs.JournalMode <- SQLiteJournalModeEnum.Off
-    cs.CacheSize <- 0
-    let con = new SQLiteConnection(cs.ConnectionString)
-    con.Open()
-    let cmd = new SQLiteCommand("create table foo (foo, bar, baz)", con)
-    cmd.ExecuteNonQuery() |> ignore
-    for i = 0 to 10 do
-        let cmd = new SQLiteCommand(sprintf "insert into foo values (%d, %s, %g)" i (i.ToString ()) (float i), con)
-        cmd.ExecuteNonQuery() |> ignore
-    let cmd = new SQLiteCommand("select * from foo where bar = :p", con)
-    let p = SQLiteParameter("p")
-    cmd.Parameters.AddRange [|p|]
-    cmd.Prepare()
-    for i = 0 to 999999 do
-        p.Value <- 8
-        use r = cmd.ExecuteReader() 
-        r.Read() |> ignore
-        let o = r.GetValues()
-        if i % 1000 = 0 then printfn "%A" o
-        r.Close()
-    con
-
 let cs = SQLiteConnectionStringBuilder("DataSource=:memory:")
 cs.JournalMode <- SQLiteJournalModeEnum.Off
 cs.CacheSize <- 0
@@ -109,16 +85,6 @@ let testRaw () =
     let db = setup ()
     for i=0 to 999999 do
         ignore (db.Query(byItem, "bar"))
-
-let testAsyncRaw () =
-    let db = setup ()
-    async {
-        for i=0 to 999999 do
-            let res = AsyncResultCell()
-            async { res.RegisterResult(AsyncOk (ignore (db.Query(byItem, "bar")))) }
-            |> Async.StartImmediate
-            do! res.AsyncResult
-    } |> Async.RunSynchronously
 
 let testAsync () = 
     async {
