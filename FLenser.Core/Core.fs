@@ -525,6 +525,7 @@ type Query private () =
                 p.[8].Value <- p9; p.[9].Value <- p10)
 
 type PreparedInsert =
+    inherit IDisposable
     abstract member Finish: unit -> unit
     abstract member Row: obj[] -> unit
     abstract member FinishAsync: unit -> Async<unit>
@@ -615,7 +616,9 @@ module Async =
             let txn : ref<Option<'TXN>> = ref None
             let savepoints = Stack<String>()
             return { new db with
-                member __.Dispose() = con.Dispose()
+                member __.Dispose() = 
+                    preparedInserts.Values |> Seq.iter (fun (_, p) -> p.Dispose ())
+                    con.Dispose()
                 member db.NoRetry(f) = f db
                 member __.NonQuery(q, a) = seq.Enqueue (async {
                     let cmd = getCmd prepared con provider q
@@ -740,7 +743,9 @@ type Db internal () =
         let txn : ref<Option<'TXN>> = ref None
         let savepoints = Stack<String>()
         { new db with
-            member __.Dispose() = con.Dispose()
+            member __.Dispose() =
+                preparedInserts.Values |> Seq.iter (fun (_, p) -> p.Dispose ())
+                con.Dispose()
             member __.NonQuery(q, a) = lock con (fun () -> 
                 let cmd = Async.getCmd prepared con provider q
                 q.Set (cmd.Parameters, a)

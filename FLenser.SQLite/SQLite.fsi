@@ -19,4 +19,4 @@ open System.Data.SQLite
 open FLenser.Core
 
 val create: SQLiteConnectionStringBuilder 
-    -> IProvider<SQLiteConnection,SQLiteParameter,SQLiteTransaction>
+    -> Provider<SQLiteConnection,SQLiteParameter,SQLiteTransaction>

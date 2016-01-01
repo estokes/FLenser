@@ -58,11 +58,16 @@ let create (csb: NpgsqlConnectionStringBuilder) =
         member __.PrepareInsert(con, tbl, columns) =
             let mutable w : Option<NpgsqlBinaryImporter> = None
             {new PreparedInsert with
+                member __.Dispose() = 
+                    match w with
+                    | None -> ()
+                    | Some w -> w.Dispose()
+                
                 member __.Finish() = 
                     match w with
                     | None -> failwith "no write in progress!"
                     | Some w -> w.Close ()
-
+                
                 member __.Row(o) =
                     let w =
                         match w with

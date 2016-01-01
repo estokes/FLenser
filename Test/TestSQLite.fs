@@ -45,7 +45,7 @@ let lens = Lens.Create<t>()
 
 let init =
     Query.Create
-        (sprintf "create table foo (%s)" (String.Join(", ", lens.ColumnNames)),
+        (sprintf "create table foo (%s)" (String.Join(", ", lens.Columns)),
          Lens.NonQuery)
 
 let items =
