@@ -54,4 +54,9 @@ let () =
     db.Insert("agents", lens, [testAgent])
     |> Async.RunSynchronously
 
+let allAgents = Query.Create("select * from agents", lens)
+let agents = db.Query(allAgents, ()) |> Async.RunSynchronously
 
+let removeAgent = 
+    Query.Create("delete from agents where id = :id", Lens.NonQuery,
+        Parameter.Int("id"))

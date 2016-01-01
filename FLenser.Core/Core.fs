@@ -27,19 +27,16 @@ open System.Reflection
 
 exception UnexpectedNull
 
-type virtualRecordField<'A> = DbParameter -> 'A -> unit
+type virtualRecordField<'A> = 'A -> obj
 type virtualDbField = String -> DbDataReader -> obj
 
-type lens<'A> internal (createParams: (String -> DbParameter) 
-                                      -> Dictionary<Guid, DbParameter>,
-                        columnNames : String[], 
-                        inject: Dictionary<Guid, DbParameter> -> 'A -> unit, 
+type lens<'A> internal (columns: String[], 
+                        inject: obj[] -> int -> 'A -> unit, 
                         project: DbDataReader -> 'A) =
     let guid = Guid.NewGuid ()
     member __.Guid with get() = guid
-    member __.ColumnNames with get() = columnNames
-    member internal __.CreateParams(create: String -> DbParameter) = createParams create
-    member internal __.Inject(p, v) = inject p v
+    member __.Columns with get() = columns
+    member internal __.Inject(target: obj[], startidx:int, v) = inject target startidx v
     member internal __.Project(r) = project r
 
 type NonQuery = {nothing: unit}
@@ -73,7 +70,7 @@ module Utils =
                 finished.RegisterResult (AsyncOk ()) }
             lock jobs (fun () ->
                 jobs.Enqueue(job, finished)
-                if running = false then Async.Start (loop ()))
+                if running = false then Async.StartImmediate (loop ()))
             res.AsyncResult
 
     type Result<'A, 'B> =
@@ -84,23 +81,20 @@ module Utils =
         try r.GetOrdinal name
         with e -> failwith (sprintf "could not find field %s %A" name e)
 
-    let tuple (lensA: lens<'T1>) (lensB: lens<'T2>) allowedIntersection : lens<'T1 * 'T2> =
-        let c (l : lens<_>) = l.ColumnNames |> Set.ofArray
+    let tuple (lensA: lens<'T1>) (lensB: lens<'T2>) allowedIntersection:lens<'T1 * 'T2> =
+        let c (l : lens<_>) = l.Columns |> Set.ofArray
         let is = Set.difference (Set.intersect (c lensA) (c lensB)) allowedIntersection
         if not (Set.isEmpty is) then
             failwith (sprintf "column names have a non empty intersection %A" is)
-        let createParams f = 
-            let pA = lensA.CreateParams f
-            let pB = lensB.CreateParams f
-            for kv in pB do pA.[kv.Key] <- kv.Value
-            pA
-        let columnNames = Array.append lensA.ColumnNames lensB.ColumnNames
-        lens<'T1 * 'T2>(createParams, columnNames, 
-            (fun p (v1, v2) -> lensA.Inject(p, v1); lensB.Inject(p, v2)),
+        let columns = Array.append lensA.Columns lensB.Columns
+        lens<'T1 * 'T2>(columns, 
+            (fun cols startidx (v1, v2) -> 
+                lensA.Inject(cols, startidx, v1)
+                lensB.Inject(cols, startidx + lensA.Columns.Length, v2)),
             (fun r -> (lensA.Project r, lensB.Project r)))
 
-    let ofInjProj (merged : lens<_>) inject project =
-        lens<_>((fun c -> merged.CreateParams c), merged.ColumnNames, inject, project)
+    let ofInjProj (merged: lens<_>) inject project = 
+        lens<_>(merged.Columns, inject, project)
 
     let ai a = defaultArg a Set.empty
 
@@ -108,9 +102,7 @@ module Utils =
     let NonQueryLens =
         let guid = Guid.NewGuid()
         let project (r: DbDataReader) = ignore r
-        lens<NonQuery>((fun _ -> Dictionary<_,_>()), [||], 
-            (fun _ _ -> ()), 
-            (fun _ -> NonQuery))
+        lens<NonQuery>([||], (fun _ _ _ -> ()), (fun _ -> NonQuery))
 
 open Utils
 
@@ -128,18 +120,14 @@ type Lens =
         let virtualRecordFields = defaultArg virtualRecordFields Map.empty
         let typ = typeof<'A>
         let jsonSer = FsPickler.CreateJsonSerializer(indent = false, omitHeader = true)
-        let mutable parameters = Dictionary<_,_>()
-        let paramsByPrefix = Dictionary<_, _>()
-        let createParamSlot prefix name =
-            let id = Guid.NewGuid ()
-            parameters.[id] <- name
-            match paramsByPrefix.TryFind prefix with
-            | None -> paramsByPrefix.[prefix] <- [|id|]
-            | Some a -> paramsByPrefix.[prefix] <- Array.append a [|id|]
+        let columns = List<_>(capacity = 10)
+        let createColumnSlot name =
+            let id = columns.Count
+            columns.Add name
             id
         let vdf = 
             virtualRecordFields 
-            |> Map.map (fun k v -> createParamSlot prefix (prefix + k), v)
+            |> Map.map (fun k v -> createColumnSlot (prefix + k), v)
         let rec subRecord (typ: Type) reader prefix =
             typ.GetMethods() 
             |> Seq.filter (fun mi -> 
@@ -162,14 +150,17 @@ type Lens =
                            && ptyp.GenericTypeArguments.[0] = typeof<String>)
                     then 
                         let lens = mi.Invoke(null, [|(Some prefix) :> obj|]) :?> lens<_>
-                        ((fun p o -> lens.Inject(p, reader o)), lens.Project)
+                        let startidx = columns.Count
+                        columns.AddRange lens.Columns
+                        ((fun a startidx' o -> lens.Inject(a, startidx + startidx', reader o)), 
+                         lens.Project)
                     else failwith 
                             (sprintf "CreateSubLens marked method does not 
                                       match the required signature
                                       static member _: ?prefix:String -> lens<'A>
                                       %A" mi)
                 | _ -> failwith (sprintf "multiple CreateSubLens in %A" typ)
-        and createInjectProject (typ : Type) (reader: obj -> obj) prefix =
+        and createInjectProject (typ: Type) (reader: obj -> obj) prefix =
             let option (typ : Type) f =
                 let ucases = FSharpType.GetUnionCases(typ)
                 let none = ucases |> Array.find (fun c -> c.Name = "None")
@@ -181,14 +172,14 @@ type Lens =
                 let mkSome = FSharpValue.PreComputeUnionConstructor some
                 let rtyp = typ.GenericTypeArguments.[0]
                 f none some get tag mkNone mkSome rtyp
-            let prim (inject: Dictionary<_,_> -> DbParameter -> obj -> unit) 
+            let prim (inject: obj -> obj) 
                 (project: DbDataReader -> String -> obj)
                 (fld : Reflection.PropertyInfo)
                 (nullok: bool) =
                 let name = prefix + fld.Name
-                let paramid = createParamSlot prefix name
-                let inject (p: Dictionary<Guid, DbParameter>) (record : obj) : unit = 
-                    inject p p.[paramid] record
+                let colid = createColumnSlot name
+                let inject (a: obj[]) startidx (record : obj) : unit = 
+                    a.[colid + startidx] <- inject record
                 let project (r: DbDataReader) : obj = 
                     let o = project r name
                     match o with
@@ -196,15 +187,15 @@ type Lens =
                     | o -> o
                 (inject, project)
             let primOpt (reader : obj -> obj) 
-                (inject : Dictionary<_,_> -> DbParameter -> obj -> unit)
+                (inject: obj -> obj)
                 (project : DbDataReader -> String -> obj) 
                 (fld : Reflection.PropertyInfo) =
                 option fld.PropertyType (fun none some get tag mkNone mkSome _ ->
-                    let inject pars (p : DbParameter) (v : obj) =
+                    let inject v =
                         let o = reader v
                         let tag = tag o
-                        if tag = none.Tag then p.Value <- null
-                        else if tag = some.Tag then inject pars p (get o)
+                        if tag = none.Tag then null
+                        else if tag = some.Tag then get o
                         else failwith "bug"
                     let project (r: DbDataReader) name : obj =
                         if r.IsDBNull(ord r name) then mkNone [||]
@@ -214,9 +205,7 @@ type Lens =
                     prim inject project fld true)
             let getp (r: DbDataReader) name f = f (ord r name)
             let primitives = 
-                let stdInj _ (p: DbParameter) v = p.Value <- box v
-                let stdProj r n = getp r n r.GetValue
-                let std = (stdInj, stdProj)
+                let std r n = getp r n r.GetValue
                 [ typeof<Boolean>.GUID, std
                   typeof<Double>.GUID, std
                   typeof<String>.GUID, std
@@ -224,8 +213,7 @@ type Lens =
                   typeof<TimeSpan>.GUID, std
                   typeof<byte[]>.GUID, std
                   typeof<int>.GUID, 
-                    (stdInj,
-                     fun r n -> getp r n (fun i ->
+                    (fun r n -> getp r n (fun i ->
                         match r.GetValue i with
                         | :? int32 as x -> x
                         | :? byte as x -> int32 x
@@ -234,8 +222,7 @@ type Lens =
                         | o -> failwith (sprintf "cannot convert %A to int32" o)
                         |> box))
                   typeof<int64>.GUID, 
-                    (stdInj, 
-                     fun r n -> getp r n (fun i ->
+                    (fun r n -> getp r n (fun i ->
                         match r.GetValue i with
                         | :? int64 as x -> x
                         | :? byte as x -> int64 x
@@ -251,48 +238,37 @@ type Lens =
                 let reader (o : obj) = 
                     FSharpValue.PreComputeRecordFieldReader fld (reader o)
                 let name = fld.Name
-                let clearPrefix (pars: Dictionary<Guid, DbParameter>) prefix =
-                    match paramsByPrefix.TryFind prefix with
-                    | None -> ()
-                    | Some p -> 
-                        for i=0 to Array.length p - 1 do pars.[p.[i]].Value <- null
                 match Map.tryFind (prefix + name) virtualDbFields with
-                | Some project -> 
-                    (fun (_: Dictionary<Guid,DbParameter>) (_: obj) -> ()), 
-                    project prefix
+                | Some project -> (fun _ _ _ -> ()), project prefix
                 | None ->
                     match fld.PropertyType with
                     | typ when FSharpType.IsRecord(typ) ->
                         subRecord typ reader (prefix + fld.Name + "$")
                     | typ when Map.containsKey typ.GUID primitives ->
-                        let (inj, proj) = primitives.[typ.GUID]
-                        prim (fun pars p r -> inj pars p (reader r)) proj fld false
+                        prim reader primitives.[typ.GUID] fld false
                     | typ when typ.GUID = typeof<Option<_>>.GUID 
                                && Map.containsKey typ.GenericTypeArguments.[0].GUID 
                                     primitives ->
-                        let (inj, proj) = primitives.[typ.GenericTypeArguments.[0].GUID]
-                        primOpt reader inj proj fld
+                        primOpt reader id 
+                            primitives.[typ.GenericTypeArguments.[0].GUID] fld
                     | typ when typ.IsArray && typ.HasElementType
                                && Map.containsKey (typ.GetElementType()).GUID primitives ->
-                        prim (fun _ p v -> p.Value <- reader v) 
-                            (fun r n -> getp r n r.GetValue)
-                            fld false
+                        prim reader (fun r n -> getp r n r.GetValue) fld false
                     | typ when typ.GUID = typeof<Option<_>>.GUID
                                && let ityp = typ.GenericTypeArguments.[0]
                                   ityp.IsArray && ityp.HasElementType
                                   && Map.containsKey (ityp.GetElementType()).GUID primitives ->
-                        primOpt reader (fun _ p v -> p.Value <- v) 
-                            (fun r n -> getp r n r.GetValue) fld
+                        primOpt reader id (fun r n -> getp r n r.GetValue) fld
                     | typ when (typ.GUID = typeof<Option<_>>.GUID
                                 && FSharpType.IsRecord(typ.GenericTypeArguments.[0])) ->
                         option typ (fun none some get tag mkNone mkSome rtyp ->
                             let prefix = prefix + fld.Name + "$"
                             let (inject, project) = subRecord rtyp id prefix
-                            let inject pars record =
+                            let inject cols startidx record =
                                 let opt = reader record
                                 let tag = tag opt
-                                if tag = none.Tag then clearPrefix pars prefix
-                                else if tag = some.Tag then inject pars (get opt)
+                                if tag = none.Tag then ()
+                                else if tag = some.Tag then inject cols startidx (get opt)
                                 else failwith "not supposed to get here!"
                             let project (r: DbDataReader) =
                                 try mkSome [|project r|]
@@ -306,6 +282,8 @@ type Lens =
                                        | [||] -> true
                                        | [|ifo|] -> FSharpType.IsRecord(ifo.PropertyType)
                                        | _ -> false)) ->
+                        let name = prefix + fld.Name
+                        let colid = createColumnSlot name
                         let tag = FSharpValue.PreComputeUnionTagReader(typ)
                         let mutable subrecprefixes = []
                         let subRecord (c: UnionCaseInfo) =
@@ -319,36 +297,34 @@ type Lens =
                                 subrecprefixes <- prefix :: subrecprefixes
                                 Some (subRecord t reader prefix)
                             | _ -> failwith "bug"
-                        let mk = 
+                        let mk =
+                            let d = Dictionary<_,_>()
                             FSharpType.GetUnionCases(typ) 
                             |> Array.map (fun c ->
                                 c.Tag, (FSharpValue.PreComputeUnionConstructor(c),
                                         subRecord c))
-                            |> Map.ofArray
-                        prim 
-                            (fun pars p v ->
-                                let tag = tag (reader v)
-                                p.Value <- tag
-                                let (_mk, subrec) = Map.find tag mk
-                                if subrecprefixes <> [] then 
-                                    subrecprefixes |> List.iter (clearPrefix pars)
-                                match subrec with
-                                | None -> ()
-                                | Some (inj, _proj) -> inj pars v)
-                            (fun r n ->
-                                let i = r.GetInt32(ord r n)
-                                let (mk, subrec) = Map.find i mk
-                                match subrec with
-                                | None -> mk [||]
-                                | Some (_, proj) -> mk [|proj r|]) 
-                            fld false
+                            |> Array.iter (fun (k, v) -> d.[k] <- v)
+                            d
+                        let inject (cols: obj[]) startidx v =
+                            let tag = tag (reader v)
+                            cols.[startidx + colid] <- box tag
+                            let (_mk, subrec) = mk.[tag]
+                            match subrec with
+                            | None -> ()
+                            | Some (inj, _proj) -> inj cols startidx v
+                        let project (r: DbDataReader) =
+                            let i = r.GetInt32(ord r name)
+                            let (mk, subrec) = mk.[i]
+                            match subrec with
+                            | None -> mk [||]
+                            | Some (_, proj) -> mk [|proj r|]
+                        (inject, project)
                     | typ ->
                         let pk = FsPickler.GeneratePickler(typ)
                         let e = System.Text.Encoding.UTF8
                         prim 
-                            (fun _ p v -> 
-                                p.Value <- 
-                                    e.GetString (jsonSer.PickleUntyped(reader v, pk)))
+                            (fun v -> 
+                                box (e.GetString (jsonSer.PickleUntyped(reader v, pk))))
                             (fun r n -> 
                                 let s = r.GetString(ord r n).Substring 1
                                 jsonSer.UnPickleUntyped(e.GetBytes s, pk, encoding = e))
@@ -356,49 +332,51 @@ type Lens =
             let construct = 
                 FSharpValue.PreComputeRecordConstructor
                     (typ, allowAccessToPrivateRepresentation = true)
-            let inject pars record = 
-                injectAndProject |> Array.iter (fun (inj, _) -> inj pars record)
+            let inject cols startidx record = 
+                injectAndProject |> Array.iter (fun (inj, _) -> inj cols startidx record)
             let project r =
                 let a = injectAndProject |> Array.map (fun (_, proj) -> proj r)
                 construct a
             (inject, project)
         let (inject, project) = createInjectProject typ id prefix
-        let columnNames = parameters.Values |> Seq.toArray
-        let createParams create =
-            let d = Dictionary<_,_>()
-            parameters |> Seq.iter (fun kv -> d.[kv.Key] <- create kv.Value)
-            d
-        lens<'A>(createParams, columnNames,
-            (fun pars t -> 
-                inject pars (box t)
-                vdf |> Map.iter (fun k (p, inject) -> inject pars.[p] t)),
+        lens<'A>(columns.ToArray(),
+            (fun cols startidx t -> 
+                inject cols startidx (box t)
+                vdf |> Map.iter (fun k (id, inject) -> 
+                    cols.[startidx + id] <- inject t)),
             (fun r -> project r :?> 'A))
 
     static member Optional(lens: lens<'A>) : lens<Option<'A>> =
-        let Inject (pars: Dictionary<Guid, DbParameter>) v =
+        let Inject cols startidx v =
             match v with
-            | None -> pars |> Seq.iter (fun kv -> kv.Value.Value <- null)
-            | Some v -> lens.Inject(pars, v)
+            | None -> ()
+            | Some v -> lens.Inject(cols, startidx, v)
         let Project(r: Data.Common.DbDataReader) = 
             let isNull col = r.IsDBNull (ord r col)
-            if Array.forall isNull lens.ColumnNames then None
+            if Array.forall isNull lens.Columns then None
             else Some (lens.Project r)
         ofInjProj lens Inject Project
+
     static member Tuple(lensA: lens<'A>, lensB: lens<'B>, ?allowedIntersection) = 
         tuple lensA lensB (ai allowedIntersection)
+
     static member Tuple(lensA: lens<'A>, lensB: lens<'B>, lensC: lens<'C>,
                         ?allowedIntersection) =
         let t = tuple lensA lensB (ai allowedIntersection)
         let t = tuple t lensC (ai allowedIntersection)
-        ofInjProj t (fun pars (a, b, c) -> t.Inject(pars, ((a, b), c)))
+        ofInjProj t 
+            (fun cols startidx (a, b, c) -> t.Inject(cols, startidx, ((a, b), c)))
             (fun r -> let ((a, b), c) = t.Project r in (a, b, c))
+
     static member Tuple(lensA: lens<'A>, lensB: lens<'B>, 
                         lensC: lens<'C>, lensD: lens<'D>,
                         ?allowedIntersection) =
         let t = Lens.Tuple(lensA, lensB, lensC, ?allowedIntersection = allowedIntersection)
         let t = Lens.Tuple(t, lensD, ?allowedIntersection = allowedIntersection)
-        ofInjProj t (fun pars (a, b, c, d) -> t.Inject(pars, ((a, b, c), d)))
+        ofInjProj t 
+            (fun cols startidx (a, b, c, d) -> t.Inject(cols, startidx, ((a, b, c), d)))
             (fun r -> let ((a, b, c), d) = t.Project r in (a, b, c, d))
+
     static member Tuple(lensA: lens<'A>, lensB: lens<'B>, lensC: lens<'C>,
                         lensD: lens<'D>, lensE: lens<'E>,
                         ?allowedIntersection) =
@@ -406,11 +384,14 @@ type Lens =
             Lens.Tuple(lensA, lensB, lensC, lensD, 
                 ?allowedIntersection = allowedIntersection)
         let t = Lens.Tuple(t, lensE, ?allowedIntersection = allowedIntersection)
-        ofInjProj t (fun pars (a, b, c, d, e) -> t.Inject(pars, ((a, b, c, d), e)))
+        ofInjProj t 
+            (fun cols startidx (a, b, c, d, e) -> 
+                t.Inject(cols, startidx, ((a, b, c, d), e)))
             (fun r -> let ((a, b, c, d), e) = t.Project r in (a, b, c, d, e))
 
 type parameter<'A> internal (name: String) =
     member __.Name with get() = name
+    member __.Type with get() = typeof<'A>
 
 type Parameter =
     static member Create<'A>(name: String) = parameter<'A>(name)
@@ -423,7 +404,7 @@ type Parameter =
     static member DateTime(name) = Parameter.Create<DateTime>(name)
     static member TimeSpan(name) = Parameter.Create<TimeSpan>(name)
 
-type query<'A, 'B> internal (sql:String, lens:lens<'B>, pars: String[],
+type query<'A, 'B> internal (sql:String, lens:lens<'B>, pars: (String * Type)[],
                              set:DbParameterCollection -> 'A -> unit) =
     let mutable onDispose = []
     interface IDisposable with 
@@ -440,27 +421,33 @@ type Query private () =
     static member Create(sql, lens: lens<'B>) = 
         new query<unit, 'B>(sql, lens, [||], fun _ _ -> ())
     static member Create(sql, lens, p1:parameter<'P1>) =
-        new query<_,_>(sql, lens, [|p1.Name|], fun p (p1: 'P1) -> p.[0].Value <- p1)
+        new query<_,_>(sql, lens, [|p1.Name, p1.Type|], 
+            fun p (p1: 'P1) -> p.[0].Value <- p1)
     static member Create(sql, lens, p1:parameter<'P1>, p2:parameter<'P2>) =
-        new query<_,_>(sql, lens, [|p1.Name; p2.Name|],
+        new query<_,_>(sql, lens, [|p1.Name, p1.Type; p2.Name, p2.Type|],
             fun p (p1: 'P1, p2: 'P2) -> p.[0].Value <- p1; p.[1].Value <- p2)
     static member Create(sql, lens, p1:parameter<'P1>, p2:parameter<'P2>, 
                          p3:parameter<'P3>) =
-        new query<_, _>(sql, lens, [|p1.Name; p2.Name; p3.Name|],
+        new query<_, _>(sql, lens, 
+            [|p1.Name, p1.Type; p2.Name, p2.Type; p3.Name, p3.Type|],
             fun p (p1: 'P1, p2: 'P2, p3: 'P3) -> 
                 p.[0].Value <- p1; p.[1].Value <- p2
                 p.[2].Value <- p3)
     static member Create
         (sql, lens, p1:parameter<'P1>, p2:parameter<'P2>, p3:parameter<'P3>, 
          p4:parameter<'P4>) =
-        new query<_, _>(sql, lens, [|p1.Name;p2.Name;p3.Name;p4.Name|],
+        new query<_, _>(sql, lens, 
+            [|p1.Name, p1.Type; p2.Name, p2.Type; p3.Name, p3.Type
+              p4.Name, p4.Type|],
             fun p (p1: 'P1, p2: 'P2, p3: 'P3, p4: 'P4) -> 
                 p.[0].Value <- p1; p.[1].Value <- p2
                 p.[2].Value <- p3; p.[3].Value <- p4)
     static member Create
         (sql, lens, p1:parameter<'P1>, p2:parameter<'P2>, 
          p3:parameter<'P3>, p4:parameter<'P4>, p5:parameter<'P5>) =
-        new query<_, _>(sql, lens, [|p1.Name; p2.Name; p3.Name; p4.Name; p5.Name|],
+        new query<_, _>(sql, lens, 
+            [|p1.Name, p1.Type; p2.Name, p2.Type; p3.Name, p3.Type
+              p4.Name, p4.Type; p5.Name, p5.Type|],
             fun p (p1: 'P1, p2: 'P2, p3: 'P3, p4: 'P4, p5: 'P5) -> 
                 p.[0].Value <- p1; p.[1].Value <- p2
                 p.[2].Value <- p3; p.[3].Value <- p4
@@ -470,7 +457,8 @@ type Query private () =
          p3:parameter<'P3>, p4:parameter<'P4>, p5:parameter<'P5>,
          p6:parameter<'P6>) =
         new query<_,_>(sql, lens, 
-            [|p1.Name; p2.Name; p3.Name; p4.Name; p5.Name; p6.Name|],
+            [|p1.Name, p1.Type; p2.Name, p2.Type; p3.Name, p3.Type
+              p4.Name, p4.Type; p5.Name, p5.Type; p6.Name, p6.Type|],
             fun p (p1: 'P1, p2: 'P2, p3: 'P3, p4: 'P4, p5: 'P5, p6: 'P6) ->
                 p.[0].Value <- p1; p.[1].Value <- p2
                 p.[2].Value <- p3; p.[3].Value <- p4
@@ -480,7 +468,9 @@ type Query private () =
          p3:parameter<'P3>, p4:parameter<'P4>, p5:parameter<'P5>,
          p6:parameter<'P6>, p7:parameter<'P7>) =
         new query<_,_>(sql, lens, 
-            [|p1.Name; p2.Name; p3.Name; p4.Name; p5.Name; p6.Name; p7.Name|],
+            [|p1.Name, p1.Type; p2.Name, p2.Type; p3.Name, p3.Type
+              p4.Name, p4.Type; p5.Name, p5.Type; p6.Name, p6.Type
+              p7.Name, p7.Type|],
             fun p (p1: 'P1, p2: 'P2, p3: 'P3, p4: 'P4, p5: 'P5, p6: 'P6, p7: 'P7) ->
                 p.[0].Value <- p1; p.[1].Value <- p2
                 p.[2].Value <- p3; p.[3].Value <- p4
@@ -491,8 +481,9 @@ type Query private () =
          p3:parameter<'P3>, p4:parameter<'P4>, p5:parameter<'P5>,
          p6:parameter<'P6>, p7:parameter<'P7>, p8:parameter<'P8>) =
         new query<_,_>(sql, lens, 
-            [|p1.Name; p2.Name; p3.Name; p4.Name; p5.Name; p6.Name; p7.Name;
-              p8.Name|],
+            [|p1.Name, p1.Type; p2.Name, p2.Type; p3.Name, p3.Type
+              p4.Name, p4.Type; p5.Name, p5.Type; p6.Name, p6.Type
+              p7.Name, p7.Type; p8.Name, p8.Type|],
             fun p (p1: 'P1, p2: 'P2, p3: 'P3, p4: 'P4, 
                    p5: 'P5, p6: 'P6, p7: 'P7, p8: 'P8) ->
                 p.[0].Value <- p1; p.[1].Value <- p2
@@ -505,8 +496,9 @@ type Query private () =
          p6:parameter<'P6>, p7:parameter<'P7>, p8:parameter<'P8>,
          p9:parameter<'P9>) =
         new query<_,_>(sql, lens, 
-            [|p1.Name; p2.Name; p3.Name; p4.Name; p5.Name; p6.Name; p7.Name;
-              p8.Name; p9.Name|],
+            [|p1.Name, p1.Type; p2.Name, p2.Type; p3.Name, p3.Type
+              p4.Name, p4.Type; p5.Name, p5.Type; p6.Name, p6.Type
+              p7.Name, p7.Type; p8.Name, p8.Type; p9.Name, p9.Type|],
             fun p (p1: 'P1, p2: 'P2, p3: 'P3, p4: 'P4, 
                    p5: 'P5, p6: 'P6, p7: 'P7, p8: 'P8, p9: 'P9) ->
                 p.[0].Value <- p1; p.[1].Value <- p2
@@ -520,8 +512,10 @@ type Query private () =
          p6:parameter<'P6>, p7:parameter<'P7>, p8:parameter<'P8>,
          p9:parameter<'P9>, p10:parameter<'P10>) =
         new query<_,_>(sql, lens, 
-            [|p1.Name; p2.Name; p3.Name; p4.Name; p5.Name; p6.Name; p7.Name;
-              p8.Name; p9.Name; p10.Name|],
+            [|p1.Name, p1.Type; p2.Name, p2.Type; p3.Name, p3.Type
+              p4.Name, p4.Type; p5.Name, p5.Type; p6.Name, p6.Type
+              p7.Name, p7.Type; p8.Name, p8.Type; p9.Name, p9.Type
+              p10.Name, p10.Type|],
             fun p (p1: 'P1, p2: 'P2, p3: 'P3, p4: 'P4, 
                    p5: 'P5, p6: 'P6, p7: 'P7, p8: 'P8, p9: 'P9, p10: 'P10) ->
                 p.[0].Value <- p1; p.[1].Value <- p2
@@ -530,19 +524,23 @@ type Query private () =
                 p.[6].Value <- p7; p.[7].Value <- p8
                 p.[8].Value <- p9; p.[9].Value <- p10)
 
-type IProvider<'CON, 'PAR, 'TXN
-                when 'CON :> DbConnection
-                 and 'CON : not struct
-                 and 'PAR :> DbParameter
-                 and 'TXN :> DbTransaction> =
+type PreparedInsert =
+    abstract member Finish: unit -> unit
+    abstract member Row: obj[] -> unit
+    abstract member FinishAsync: unit -> Async<unit>
+    abstract member RowAsync: obj[] -> Async<unit>
+
+type Provider<'CON, 'PAR, 'TXN
+               when 'CON :> DbConnection
+                and 'CON : not struct
+                and 'PAR :> DbParameter
+                and 'TXN :> DbTransaction> =
     inherit IDisposable
     abstract member ConnectAsync: unit -> Async<'CON>
     abstract member Connect: unit -> 'CON
-    abstract member CreateParameter: name:String -> 'PAR
-    abstract member InsertObjectAsync: 'CON * table:String * columns:String[]
-        -> (seq<obj[]> -> Async<unit>)
-    abstract member InsertObject: 'CON * table:String * columns:String[]
-        -> (seq<obj[]> -> unit)
+    abstract member CreateParameter: name:String * typ:Type -> 'PAR
+    abstract member PrepareInsert: 'CON * table:String * columns:String[] 
+        -> PreparedInsert
     abstract member HasNestedTransactions: bool
     abstract member BeginTransaction: 'CON -> 'TXN
     abstract member NestedTransaction: 'CON * 'TXN -> String
@@ -559,14 +557,14 @@ module Async =
         abstract member NoRetry: (db -> Async<'A>) -> Async<'A>
 
     let getCmd (prepared: Dictionary<Guid, DbCommand>) 
-        (con: #DbConnection) (provider: IProvider<_,_,_>) (q: query<_,_>)= 
+        (con: #DbConnection) (provider: Provider<_,_,_>) (q: query<_,_>)= 
         match prepared.TryFind q.Guid with
         | Some cmd -> cmd 
         | None ->
             let cmd = con.CreateCommand()
             let pars = 
-                q.Parameters |> Array.map (fun name -> 
-                    (provider.CreateParameter name :> DbParameter))
+                q.Parameters |> Array.map (fun (name, typ) -> 
+                    (provider.CreateParameter(name, typ) :> DbParameter))
             cmd.Connection <- con
             cmd.CommandText <- q.Sql 
             cmd.Parameters.AddRange pars
@@ -575,7 +573,7 @@ module Async =
             q.PushDispose (fun () -> ignore (prepared.Remove q.Guid))
             cmd
 
-    let buildTxn (txn: ref<Option<#DbTransaction>>) (provider: IProvider<_,_,_>) 
+    let buildTxn (txn: ref<Option<#DbTransaction>>) (provider: Provider<_,_,_>) 
         (savepoints: Stack<String>) (con: #DbConnection) =
         lock txn (fun () -> 
             let std (t: DbTransaction) =
@@ -597,15 +595,23 @@ module Async =
                     (fun () -> lock txn (fun () ->
                         provider.CommitNested(con, t, savepoints.Pop()))))
 
+    let prepareInsert (lens: lens<_>) (preparedInserts: Dictionary<_,_>) 
+        (provider: Provider<_,_,_>) (table: String) (con: #DbConnection) =
+        let len = Array.length lens.Columns
+        match preparedInserts.TryFind lens.Guid with
+        | Some x -> x
+        | None ->
+            let pi = provider.PrepareInsert(con, table, lens.Columns)
+            let o = Array.create len null
+            preparedInserts.[lens.Guid] <- (o, pi)
+            (o, pi)
+
     type Db =
-        static member Connect(provider: IProvider<_,_,'TXN>) = async {
+        static member Connect(provider: Provider<_,_,'TXN>) = async {
             let! con = provider.ConnectAsync ()
             let seq = new Sequencer()
             let prepared = Dictionary<Guid, DbCommand>()
-            let preparedInserts = 
-                Dictionary<Guid, Dictionary<Guid, DbParameter>
-                                 * DbParameter[]
-                                 * (seq<obj[]> -> Async<unit>)>()
+            let preparedInserts = Dictionary<Guid, obj[] * PreparedInsert>()
             let txn : ref<Option<'TXN>> = ref None
             let savepoints = Stack<String>()
             return { new db with
@@ -632,24 +638,18 @@ module Async =
                     q.Set (cmd.Parameters, a)
                     let! r = cmd.ExecuteReaderAsync() |> Async.AwaitTask
                     return! read q.Lens r })
-                member __.Insert(table, lens: lens<'A>, a: seq<'A>) = seq.Enqueue(async {
-                    let (pars, pararray, run) = 
-                        match preparedInserts.TryFind lens.Guid with
-                        | Some x -> x
-                        | None ->
-                            let pars = 
-                                lens.CreateParams (fun name -> 
-                                    (provider.CreateParameter name :> DbParameter))
-                            let pararray = pars |> Seq.map (fun kv -> kv.Value) |> Seq.toArray
-                            let run = 
-                                provider.InsertObjectAsync(con, table, 
-                                    pararray |> Array.map (fun p -> p.ParameterName))
-                            preparedInserts.[lens.Guid] <- (pars, pararray, run)
-                            (pars, pararray, run)
-                    let a = a |> Seq.map (fun a ->
-                        lens.Inject(pars, a)
-                        pararray |> Array.map (fun p -> p.Value))
-                    return! run a })
+                member __.Insert(table, lens: lens<'A>, ts: seq<'A>) = 
+                    seq.Enqueue(async {
+                        let (o, pi) = 
+                            prepareInsert lens preparedInserts provider table con
+                        do! ts |> Seq.map (fun t -> async {
+                                Array.Clear(o, 0, o.Length)
+                                lens.Inject(o, 0, t)
+                                return! pi.RowAsync o })
+                            |> Seq.toList
+                            |> Async.sequence
+                            |> Async.Ignore
+                        return! pi.FinishAsync () })
                 member db.Transaction(f) = async {
                     let (rollback, commit) = buildTxn txn provider savepoints con
                     try
@@ -658,7 +658,7 @@ module Async =
                         return res
                     with e -> rollback (); return raise e } } }
 
-        static member WithRetries(provider: IProvider<_,_,_>, ?log, ?tries) = async {
+        static member WithRetries(provider: Provider<_,_,_>, ?log, ?tries) = async {
             let log = defaultArg log ignore
             let tries = defaultArg tries 3
             let seq = new Sequencer()
@@ -733,13 +733,10 @@ type db =
     abstract member Transaction: (db -> 'a) -> 'a
 
 type Db internal () =
-    static member Connect(provider: IProvider<_, _, 'TXN>) = 
+    static member Connect(provider: Provider<_, _, 'TXN>) = 
         let con = provider.Connect ()
         let prepared = Dictionary<Guid, DbCommand>()
-        let preparedInserts = 
-            Dictionary<Guid, Dictionary<Guid, DbParameter>
-                             * DbParameter[]
-                             * (seq<obj[]> -> unit)>()
+        let preparedInserts = Dictionary<Guid, obj[] * PreparedInsert>()
         let txn : ref<Option<'TXN>> = ref None
         let savepoints = Stack<String>()
         { new db with
@@ -764,23 +761,12 @@ type Db internal () =
                 let r = cmd.ExecuteReader()
                 read q.Lens r)
             member __.Insert(table, lens: lens<'A>, a: seq<'A>) = 
-                let (pars, pararray, run) = 
-                    match preparedInserts.TryFind lens.Guid with
-                    | Some x -> x
-                    | None ->
-                        let pars = 
-                            lens.CreateParams (fun name -> 
-                                (provider.CreateParameter name :> DbParameter))
-                        let pararray = pars |> Seq.map (fun kv -> kv.Value) |> Seq.toArray
-                        let run = 
-                            provider.InsertObject(con, table, 
-                                pararray |> Array.map (fun p -> p.ParameterName))
-                        preparedInserts.[lens.Guid] <- (pars, pararray, run)
-                        (pars, pararray, run)
-                let a = a |> Seq.map (fun a ->
-                    lens.Inject(pars, a)
-                    pararray |> Array.map (fun p -> p.Value))
-                run a
+                let (o, pi) = Async.prepareInsert lens preparedInserts provider table con
+                for t in a do
+                    Array.Clear(o, 0, o.Length)
+                    lens.Inject(o, 0, t)
+                    pi.Row o
+                pi.Finish()
             member db.Transaction(f) =
                 let (rollback, commit) = Async.buildTxn txn provider savepoints con
                 try

@@ -25,7 +25,7 @@ open NpgsqlTypes
 
 let create (csb: NpgsqlConnectionStringBuilder) =
     let mutable savepoint = 0
-    { new IProvider<_,_,_> with
+    { new Provider<_,_,_> with
         member __.ConnectAsync() = async {
             let con = new NpgsqlConnection(csb)
             do! con.OpenAsync() |> Async.AwaitTask
@@ -36,44 +36,64 @@ let create (csb: NpgsqlConnectionStringBuilder) =
             con.Open()
             con
 
-        member __.CreateParameter(name) = 
-            let p = NpgsqlParameter()
-            p.ParameterName <- name
-            p
+        member __.CreateParameter(name, typ) =
+            // this is much slower than matching with :? which is why
+            // we don't combine the two mappings of pgtypes
+            let pgtyp =
+                if typ = typeof<bool> then NpgsqlDbType.Boolean
+                elif typ = typeof<DateTime> then NpgsqlDbType.Timestamp
+                elif typ = typeof<float> then NpgsqlDbType.Double
+                elif typ = typeof<int> then NpgsqlDbType.Integer
+                elif typ = typeof<int64> then NpgsqlDbType.Bigint
+                elif typ = typeof<String> then NpgsqlDbType.Text
+                elif typ = typeof<TimeSpan> then NpgsqlDbType.Interval
+                elif typ = typeof<byte> then NpgsqlDbType.Bytea
+                else NpgsqlDbType.Unknown
+            NpgsqlParameter(name, pgtyp)
 
         member __.BeginTransaction(con) = con.BeginTransaction()
 
         member __.Dispose() = ()
 
-        member __.InsertObject(con, tbl, columns) = (fun items -> 
-            if not (Seq.isEmpty items) then
-                let sql = 
-                    sprintf "COPY %s (%s) FROM STDIN BINARY" tbl (String.Join (", ", columns))
-                use w = con.BeginBinaryImport(sql)
-                items |> Seq.iter (fun o ->
+        member __.PrepareInsert(con, tbl, columns) =
+            let mutable w : Option<NpgsqlBinaryImporter> = None
+            {new PreparedInsert with
+                member __.Finish() = 
+                    match w with
+                    | None -> failwith "no write in progress!"
+                    | Some w -> w.Close ()
+
+                member __.Row(o) =
+                    let w =
+                        match w with
+                        | Some w -> w
+                        | None ->
+                            let sql = 
+                                sprintf "COPY %s (%s) FROM STDIN BINARY" tbl (String.Join (", ", columns))
+                            let b = con.BeginBinaryImport(sql)
+                            w <- Some b
+                            b
                     w.StartRow()
                     for i=0 to Array.length o - 1 do
                         match o.[i] with
                         | null -> w.WriteNull()
-                        | o ->
-                            match o with
-                            | :? bool as x -> w.Write<bool>(x, NpgsqlDbType.Boolean)
-                            | :? DateTime as x -> w.Write<DateTime>(x, NpgsqlDbType.Timestamp)
-                            | :? float as x -> w.Write<float>(x, NpgsqlDbType.Double)
-                            | :? int32 as x -> w.Write<int32>(x, NpgsqlDbType.Integer)
-                            | :? int64 as x -> w.Write<int64>(x, NpgsqlDbType.Bigint)
-                            | :? String as x -> w.Write<String>(x, NpgsqlDbType.Text)
-                            | :? TimeSpan as x -> w.Write<TimeSpan>(x, NpgsqlDbType.Interval)
-                            | :? array<byte> as x -> w.Write<byte[]>(x, NpgsqlDbType.Bytea)
-                            | t -> failwith (sprintf "unknown type %A" t)))
-
-        member p.InsertObjectAsync(con, tbl, columns) = 
-            let f = p.InsertObject(con, tbl, columns)
-            (fun items -> async {
-                let! res = Async.StartChild(async {
+                        | :? bool as x -> w.Write<bool>(x, NpgsqlDbType.Boolean)
+                        | :? DateTime as x -> w.Write<DateTime>(x, NpgsqlDbType.Timestamp)
+                        | :? float as x -> w.Write<float>(x, NpgsqlDbType.Double)
+                        | :? int32 as x -> w.Write<int32>(x, NpgsqlDbType.Integer)
+                        | :? int64 as x -> w.Write<int64>(x, NpgsqlDbType.Bigint)
+                        | :? String as x -> w.Write<String>(x, NpgsqlDbType.Text)
+                        | :? TimeSpan as x -> w.Write<TimeSpan>(x, NpgsqlDbType.Interval)
+                        | :? array<byte> as x -> w.Write<byte[]>(x, NpgsqlDbType.Bytea)
+                        | x -> w.Write(x, NpgsqlDbType.Unknown)
+                
+                member p.RowAsync(o) = async {
                     do! Async.SwitchToThreadPool()
-                    f items })
-                return! res })
+                    p.Row(o) }
+                
+                member p.FinishAsync() = async {
+                    do! Async.SwitchToThreadPool()
+                    p.Finish() } }
 
         member __.HasNestedTransactions = true
         member __.NestedTransaction(con, t) =

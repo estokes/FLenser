@@ -19,4 +19,4 @@ open Npgsql
 open FLenser.Core
 
 val create: NpgsqlConnectionStringBuilder 
-    -> IProvider<NpgsqlConnection,NpgsqlParameter,NpgsqlTransaction>
+    -> Provider<NpgsqlConnection,NpgsqlParameter,NpgsqlTransaction>

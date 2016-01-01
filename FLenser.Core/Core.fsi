@@ -34,44 +34,28 @@ open System.Data.Common
 
 // A virtual record field is a field in the database that is derived from
 // a function on the underlying record, it need not exist in the record.
-// This is useful for generating indices
-type virtualRecordField<'A> = DbParameter -> 'A -> unit
+type virtualRecordField<'A> = 'A -> obj
 
 (* a virtual db field is a field that exists in the record but 
-   is derived from other fields in the database. It is possible to
-   specify virtual db fields in nested records by prefixing the
-   name of the field containing the nested record to the name of the
-   field in the nested recorf. E.G.
-
-   type a =
-      { foo: String
-        bar: int
-        virtualfld: float }
-   
-   type b = 
-      { baz: String
-        zam: DateTime
-        fld: a }
-
-   then the name of the virtual field in a, in a lens processing b is
-   "fld$virtualfld"
-*) 
+   is derived from other fields in the database. The passed in
+   string is the prefix to the field name in the current record,
+   it is only meaningful in the context of nested records. *) 
 type virtualDbField = String -> DbDataReader -> obj
 
 (* A Lens bidirectionally maps a F# record type to a database row type. Lenses only work on
    F# record types, however those record types may contain other records, variants, arrays, and
    other types (more complex ones via json serialization)
     
-   Translation begins with the following primitive mappings
-   .net     <==>        Db
-   Boolean  <==>      bool
-   Double   <==>    double
-   String   <==>      text
-   DateTime <==> timestamp
-   TimeSpan <==>  interval
-   byte[]   <==>     bytea
-   int      <==>       int
-   int64    <==>       int
+   Translation begins with primitive mappings (defined by the provider) e.g.
+   .net     <==> PostgreSQL
+   Boolean  <==>       bool
+   Double   <==>     double
+   String   <==>       text
+   DateTime <==>  timestamp
+   TimeSpan <==>   interval
+   byte[]   <==>      bytea
+   int      <==>        int
+   int64    <==>        int
 
    F# record fields map to database column names, which are prefixed with the string in the 
    prefix argument, if specified. Database table names are not significant to the translation,
@@ -105,29 +89,29 @@ type virtualDbField = String -> DbDataReader -> obj
    type a = {name: String; items:String[]} <==> create table _ (name text, items text[])
 
    Any type that isn't a primitive, subrecord, optional subrecord, variant
-   with only nothing, or records as args, or an array will be serialized to JSONB. E.G.
+   with only nothing or records as args, or an array will be serialized to JSON. E.G.
    type b = {name: String; items: list<String * String>} <==> create table _ (name text, items jsonb)
 *)
 [<Class>]
 type lens<'A> =
     member Guid : Guid with get
-    member ColumnNames : string [] with get
+    member Columns : string [] with get
 
 type NonQuery
 
-// add this attribute to a static member of your
-// records of type
-//
-// ?prefix:String -> lens<'A>
-//
-// And Lens.create will call this method and use
-// the returned lens instead of processing the sub
-// record. You can use this functionality to define
-// virtual record fields and virtual db fields in just
-// one place such that they still work correctly when the
-// type is used as a sub record (e.g. say you're assembling
-// a large join and reading the results into a toplevel record
-// instead of a tuple)
+(* add this attribute to a static member of your
+   records of type
+
+   ?prefix:String -> lens<'A>
+
+   And Lens.create will call this method and use
+   the returned lens instead of processing the sub
+   record. You can use this functionality to define
+   virtual record fields and virtual db fields in just
+   one place such that they still work correctly when the
+   type is used as a sub record (e.g. say you're assembling
+   a large join and reading the results into a toplevel record
+   instead of a tuple) *)
 [<Class>]
 type CreateSubLensAttribute =
     inherit Attribute
@@ -186,7 +170,7 @@ type query<'A, 'B> =
     interface IDisposable
     member Guid: Guid with get
     member Sql: String with get
-    member Parameters: String[] with get
+    member Parameters: (String * Type)[] with get
 
 [<Class>]
 type Query =
@@ -233,21 +217,25 @@ type Query =
         * p10:parameter<'P10>
         -> query<'P1 * 'P2 * 'P3 * 'P4 * 'P5 * 'P6 * 'P7 * 'P8 * 'P9 * 'P10, 'B>
 
+type PreparedInsert =
+    abstract member Finish: unit -> unit
+    abstract member Row: obj[] -> unit
+    abstract member FinishAsync: unit -> Async<unit>
+    abstract member RowAsync: obj[] -> Async<unit>
+
 // A provider is required to interface with an APO.NET implementation,
 // and should be easy to derive from such an implementation
-type IProvider<'CON, 'PAR, 'TXN
-                when 'CON :> DbConnection
-                 and 'CON : not struct
-                 and 'PAR :> DbParameter
-                 and 'TXN :> DbTransaction> =
+type Provider<'CON, 'PAR, 'TXN
+               when 'CON :> DbConnection
+                and 'CON : not struct
+                and 'PAR :> DbParameter
+                and 'TXN :> DbTransaction> =
     inherit IDisposable
     abstract member ConnectAsync: unit -> Async<'CON>
     abstract member Connect: unit -> 'CON
-    abstract member CreateParameter: name:String -> 'PAR
-    abstract member InsertObjectAsync: 'CON * table:String * columns:String[]
-        -> (seq<obj[]> -> Async<unit>)
-    abstract member InsertObject: 'CON * table:String * columns:String[]
-        -> (seq<obj[]> -> unit)
+    abstract member CreateParameter: name:String * typ:Type -> 'PAR
+    abstract member PrepareInsert: 'CON * table:String * columns:String[] 
+        -> PreparedInsert
     abstract member HasNestedTransactions: bool
     abstract member BeginTransaction: 'CON -> 'TXN
     abstract member NestedTransaction: 'CON * 'TXN -> String
@@ -283,12 +271,12 @@ module Async =
 
     [<Class>]
     type Db =
-        static member Connect: IProvider<_,_,_> -> Async<db>
+        static member Connect: Provider<_,_,_> -> Async<db>
 
         // This will return a db that will retry queries marked safetoretry
         // on error. This may in rare cases result in multiple successful executions
         // of a query, so ensure that queries marked safe to retry are idempotent
-        static member WithRetries: IProvider<_,_,_>
+        static member WithRetries: Provider<_,_,_>
             * ?log:(Exception -> unit) 
             * ?tries:int 
             -> Async<db>
@@ -305,4 +293,4 @@ type Db =
     // Since most db operations take a long time this should be used
     // with caution. However if you have an in memory db it can reduce
     // overhead significantly. Most users will want ConnectAsync.
-    static member Connect: IProvider<_,_,_> -> db
+    static member Connect: Provider<_,_,_> -> db
