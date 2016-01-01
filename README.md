@@ -1,5 +1,7 @@
 # FLenser
 
+A simple object relational mapper for F# record types.
+
 ## Installation
 
 NuGet Packages are avaliable. There is a package for the core FLenser.Core, as well
