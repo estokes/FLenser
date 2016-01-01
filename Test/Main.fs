@@ -93,86 +93,6 @@ let cs = SQLiteConnectionStringBuilder("DataSource=:memory:")
 cs.JournalMode <- SQLiteJournalModeEnum.Off
 cs.CacheSize <- 0
 
-type Sequencer() =
-    let mutable stop = false
-    let mutable available = AsyncResultCell()
-    let jobs = Queue<Async<Unit>>()
-    let rec loop () = async {
-        if stop then ()
-        else
-            do! available.AsyncResult
-            let job =
-                lock jobs (fun () -> 
-                    if jobs.Count = 0 then
-                        available <- AsyncResultCell()
-                        None
-                    else Some (jobs.Dequeue ()))
-            match job with
-            | None -> return! loop ()
-            | Some job ->
-                do! job 
-                return! loop () }
-    do loop () |> Async.StartImmediate
-    interface IDisposable with member __.Dispose() = stop <- true
-    member __.Enqueue(job : Async<'A>) : Async<'A> =
-        if stop then failwith "The sequencer is stopped!"
-        let res = AsyncResultCell()
-        lock jobs (fun () ->
-            if jobs.Count = 0 then available.RegisterResult (AsyncOk ())
-            let job = async {
-                try
-                    let! z = job
-                    res.RegisterResult (AsyncOk z)
-                with e -> 
-                    return res.RegisterResult (AsyncException e) }
-            jobs.Enqueue(job))
-        res.AsyncResult
-
-let testSeq () =
-    let rnd = Random()
-    use seq = new Sequencer()
-    let mutable num = 0
-    async {
-        do! [1..10000]
-            |> Seq.map (fun _ -> 
-                seq.Enqueue(async {
-                    num <- num + 1
-                    do! Async.Sleep (rnd.Next(1, 5))
-                    num <- num - 1
-                    if num <> 0 then printfn "oops %d" num }))
-            |> Async.Parallel
-            |> Async.Ignore
-    } |> Async.RunSynchronously
-
-type Throttle(maxConcurrentJobs: int, start: Async<_> -> unit) = 
-    let waiting = BlockingQueueAgent<_>(max maxConcurrentJobs 50)
-    let running = BlockingQueueAgent<_>(maxConcurrentJobs)
-    let rec loop () = async {
-        let! (job, finished) = waiting.AsyncGet ()
-        do! running.AsyncAdd (())
-        start job
-        async { do! finished
-                do! running.AsyncGet () }
-        |> Async.StartImmediate
-        return! loop () }
-    do loop () |> Async.Start
-    member t.EnqueueWait(job: Async<'A>) : Async<'A> = async { 
-        let! res = t.Enqueue job
-        return! res }
-    member __.Enqueue(job: Async<'A>) : Async<Async<'A>> = async {
-        let result = AsyncResultCell()
-        let job = async {
-            try
-                let! res = job
-                result.RegisterResult (AsyncOk res)
-            with e -> result.RegisterResult (AsyncException e) }
-        let finished = async {
-            try do! result.AsyncResult |> Async.Ignore
-            with _ -> () }
-        do! waiting.AsyncAdd ((job, finished))
-        return result.AsyncResult }
-
-
 let setupasync () = async {
     let! db = Db.ConnectAsync(FLenser.SQLite.Provider.create cs)
     let! _ = db.NonQuery(init, ())
@@ -185,17 +105,12 @@ let setup () =
     db.Transaction(fun db -> db.Insert("foo", lens, items))
     db
 
-System.GC.Collect(2, System.GCCollectionMode.Forced, true);;
-
-let th = Throttle(1, Async.StartImmediate)
-let testThrottle () =
+let testRaw () = 
     let db = setup ()
-    async {
-        for i=0 to 999999 do
-            do! th.EnqueueWait(async { ignore (db.Query(byItem, "bar") : List<t>)})
-    } |> Async.RunSynchronously
+    for i=0 to 999999 do
+        ignore (db.Query(byItem, "bar"))
 
-let testAsync () =
+let testAsyncRaw () =
     let db = setup ()
     async {
         for i=0 to 999999 do
@@ -203,6 +118,13 @@ let testAsync () =
             async { res.RegisterResult(AsyncOk (ignore (db.Query(byItem, "bar")))) }
             |> Async.StartImmediate
             do! res.AsyncResult
+    } |> Async.RunSynchronously
+
+let testAsync () = 
+    async {
+        let! db = setupasync ()
+        for i=0 to 999999 do
+            do! db.Query(byItem, "bar") |> Async.Ignore 
     } |> Async.RunSynchronously
 
 [<EntryPoint>]

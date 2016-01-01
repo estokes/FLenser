@@ -54,14 +54,14 @@ module Utils =
         member __.Enqueue(job : Async<'A>) : Async<'A> =
             if stop then failwith "The sequencer is stopped!"
             let res = AsyncResultCell()
+            let job = async {
+                try
+                    let! z = job
+                    res.RegisterResult (AsyncOk z)
+                with e -> 
+                    return res.RegisterResult (AsyncException e) }
             lock jobs (fun () ->
                 if jobs.Count = 0 then available.RegisterResult (AsyncOk ())
-                let job = async {
-                    try
-                        let! z = job
-                        res.RegisterResult (AsyncOk z)
-                    with e -> 
-                        return res.RegisterResult (AsyncException e) }
                 jobs.Enqueue(job))
             res.AsyncResult
 
@@ -554,7 +554,44 @@ type db =
     abstract member Transaction: (db -> 'a) -> 'a
     abstract member NoRetry: (db -> 'A) -> 'A
 
-type Db =
+type Db internal () =
+    static let getCmd (prepared: Dictionary<Guid, DbCommand>) 
+        (con: #DbConnection) (provider: IProvider<_,_,_>) (q: query<_,_>)= 
+        match prepared.TryFind q.Guid with
+        | Some cmd -> cmd 
+        | None ->
+            let cmd = con.CreateCommand()
+            let pars = 
+                q.Parameters |> Array.map (fun name -> 
+                    (provider.CreateParameter name :> DbParameter))
+            cmd.Connection <- con
+            cmd.CommandText <- q.Sql 
+            cmd.Parameters.AddRange pars
+            cmd.Prepare ()
+            prepared.[q.Guid] <- cmd
+            q.PushDispose (fun () -> ignore (prepared.Remove q.Guid))
+            cmd
+    static let buildTxn (txn: ref<Option<#DbTransaction>>) (provider: IProvider<_,_,_>) 
+        (savepoints: Stack<String>) (con: #DbConnection) =
+        lock !txn (fun () -> 
+            let std (t: DbTransaction) =
+                let rst () = txn := None; savepoints.Clear ()
+                (fun () -> lock txn (fun () -> rst (); t.Rollback ())),
+                (fun () -> lock txn (fun () -> rst (); t.Commit ()))
+            match !txn with
+            | None ->
+                let t = provider.BeginTransaction con
+                txn := Some t
+                std t
+            | Some t ->
+                if not provider.HasNestedTransactions then std t
+                else
+                    let name = provider.NestedTransaction(con, t)
+                    savepoints.Push name
+                    (fun () -> lock txn (fun () -> 
+                        provider.RollbackNested(con, t, savepoints.Pop ()))),
+                    (fun () -> lock txn (fun () ->
+                        provider.CommitNested(con, t, savepoints.Pop()))))
     static member Connect(provider: IProvider<_, _, 'TXN>) = 
         let con = provider.Connect ()
         let prepared = Dictionary<Guid, DbCommand>()
@@ -562,42 +599,27 @@ type Db =
             Dictionary<Guid, Dictionary<Guid, DbParameter>
                              * DbParameter[]
                              * (seq<obj[]> -> unit)>()
-        let read (lens : lens<'B>) (r: DbDataReader) =
-            let l = List<'B>(capacity = 4)
-            let rec loop () =
-                if not (r.Read ()) then
-                    if not r.IsClosed then r.Close ()
-                    l
-                else
-                    l.Add (lens.Project r)
-                    loop ()
-            loop ()
-        let getCmd (q: query<_,_>)= 
-            match prepared.TryFind q.Guid with
-            | Some cmd -> cmd 
-            | None ->
-                let cmd = con.CreateCommand()
-                let pars = 
-                    q.Parameters |> Array.map (fun name -> 
-                        (provider.CreateParameter name :> DbParameter))
-                cmd.Connection <- con
-                cmd.CommandText <- q.Sql 
-                cmd.Parameters.AddRange pars
-                cmd.Prepare ()
-                prepared.[q.Guid] <- cmd
-                q.PushDispose (fun () -> ignore (prepared.Remove q.Guid))
-                cmd
         let txn : ref<Option<'TXN>> = ref None
         let savepoints = Stack<String>()
         { new db with
             member __.Dispose() = con.Dispose()
             member db.NoRetry(f) = f db
             member __.NonQuery(q, a) = lock con (fun () -> 
-                let cmd = getCmd q
+                let cmd = getCmd prepared con provider q
                 q.Set (cmd.Parameters, a)
                 cmd.ExecuteNonQuery())
             member __.Query(q, a) = lock con (fun () -> 
-                let cmd = getCmd q
+                let read (lens : lens<'B>) (r: DbDataReader) =
+                    let l = List<'B>(capacity = 4)
+                    let rec loop () =
+                        if not (r.Read ()) then
+                            if not r.IsClosed then r.Close ()
+                            l
+                        else
+                            l.Add (lens.Project r)
+                            loop ()
+                    loop ()
+                let cmd = getCmd prepared con provider q
                 q.Set (cmd.Parameters, a)
                 let r = cmd.ExecuteReader()
                 read q.Lens r)
@@ -620,26 +642,7 @@ type Db =
                     pararray |> Array.map (fun p -> p.Value))
                 run a
             member db.Transaction(f) =
-                let (rollback, commit) =
-                    lock txn (fun () -> 
-                        let std (t: DbTransaction) =
-                            let rst () = txn := None; savepoints.Clear ()
-                            (fun () -> lock txn (fun () -> rst (); t.Rollback ())),
-                            (fun () -> lock txn (fun () -> rst (); t.Commit ()))
-                        match !txn with
-                        | None ->
-                            let t = provider.BeginTransaction con
-                            txn := Some t
-                            std t
-                        | Some t ->
-                            if not provider.HasNestedTransactions then std t
-                            else
-                                let name = provider.NestedTransaction(con, t)
-                                savepoints.Push name
-                                (fun () -> lock txn (fun () -> 
-                                    provider.RollbackNested(con, t, savepoints.Pop ()))),
-                                (fun () -> lock txn (fun () ->
-                                    provider.CommitNested(con, t, savepoints.Pop()))))
+                let (rollback, commit) = buildTxn txn provider savepoints con
                 try
                     let res = f db
                     commit ()
@@ -648,56 +651,41 @@ type Db =
 
     static member ConnectAsync(provider: IProvider<_,_,'TXN>) = async {
         let! con = provider.ConnectAsync ()
-        let th = new Sequencer()
+        let seq = new Sequencer()
         let prepared = Dictionary<Guid, DbCommand>()
         let preparedInserts = 
             Dictionary<Guid, Dictionary<Guid, DbParameter>
                              * DbParameter[]
                              * (seq<obj[]> -> Async<unit>)>()
-        let read (lens : lens<'B>) (r: DbDataReader) =
-            let l = List<'B>(capacity = 4)
-            let rec loop () = async {
-                let! res = r.ReadAsync() |> Async.AwaitTask
-                if not res then
-                    if not r.IsClosed then r.Close ()
-                    return l
-                else
-                    l.Add (lens.Project r)
-                    return! loop () }
-            loop ()
-        let getCmd (q: query<_,_>)= 
-            match prepared.TryFind q.Guid with
-            | Some cmd -> cmd 
-            | None ->
-                let cmd = con.CreateCommand()
-                let pars = 
-                    q.Parameters |> Array.map (fun name -> 
-                        (provider.CreateParameter name :> DbParameter))
-                cmd.Connection <- con
-                cmd.CommandText <- q.Sql 
-                cmd.Parameters.AddRange pars
-                cmd.Prepare ()
-                prepared.[q.Guid] <- cmd
-                q.PushDispose (fun () -> ignore (prepared.Remove q.Guid))
-                cmd
         let txn : ref<Option<'TXN>> = ref None
         let savepoints = Stack<String>()
         return { new asyncdb with
             member __.Dispose() = 
-                (th :> IDisposable).Dispose()
+                (seq :> IDisposable).Dispose()
                 con.Dispose()
             member db.NoRetry(f) = f db
-            member __.NonQuery(q, a) = th.Enqueue (async {
-                let cmd = getCmd q
+            member __.NonQuery(q, a) = seq.Enqueue (async {
+                let cmd = getCmd prepared con provider q
                 q.Set (cmd.Parameters, a)
                 let! i = cmd.ExecuteNonQueryAsync() |> Async.AwaitTask
                 return i })
-            member __.Query(q, a) = th.Enqueue(async {
-                let cmd = getCmd q
+            member __.Query(q, a) = seq.Enqueue (async {
+                let read (lens : lens<'B>) (r: DbDataReader) =
+                    let l = List<'B>(capacity = 4)
+                    let rec loop () = async {
+                        let! res = r.ReadAsync() |> Async.AwaitTask
+                        if not res then
+                            if not r.IsClosed then r.Close ()
+                            return l
+                        else
+                            l.Add (lens.Project r)
+                            return! loop () }
+                    loop ()
+                let cmd = getCmd prepared con provider q
                 q.Set (cmd.Parameters, a)
                 let! r = cmd.ExecuteReaderAsync() |> Async.AwaitTask
                 return! read q.Lens r })
-            member __.Insert(table, lens: lens<'A>, a: seq<'A>) = th.Enqueue(async {
+            member __.Insert(table, lens: lens<'A>, a: seq<'A>) = seq.Enqueue(async {
                 let (pars, pararray, run) = 
                     match preparedInserts.TryFind lens.Guid with
                     | Some x -> x
@@ -716,26 +704,7 @@ type Db =
                     pararray |> Array.map (fun p -> p.Value))
                 return! run a })
             member db.Transaction(f) = async {
-                let (rollback, commit) =
-                    lock txn (fun () -> 
-                        let std (t: DbTransaction) =
-                            let rst () = txn := None; savepoints.Clear ()
-                            (fun () -> lock txn (fun () -> rst (); t.Rollback ())),
-                            (fun () -> lock txn (fun () -> rst (); t.Commit ()))
-                        match !txn with
-                        | None ->
-                            let t = provider.BeginTransaction con
-                            txn := Some t
-                            std t
-                        | Some t ->
-                            if not provider.HasNestedTransactions then std t
-                            else
-                                let name = provider.NestedTransaction(con, t)
-                                savepoints.Push name
-                                (fun () -> lock txn (fun () -> 
-                                    provider.RollbackNested(con, t, savepoints.Pop ()))),
-                                (fun () -> lock txn (fun () ->
-                                    provider.CommitNested(con, t, savepoints.Pop()))))
+                let (rollback, commit) = buildTxn txn provider savepoints con
                 try
                     let! res = f db
                     commit ()
