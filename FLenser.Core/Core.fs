@@ -46,38 +46,34 @@ type NonQuery = {nothing: unit}
 
 module Utils =
     type Sequencer() =
-        let mutable stop = false
-        let mutable available = AsyncResultCell()
-        let jobs = Queue<Async<Unit>>()
+        let mutable running = false
+        let jobs = Queue<Async<Unit> * AsyncResultCell<Unit>>()
         let rec loop () = async {
-            if stop then ()
-            else
-                do! available.AsyncResult
-                let job =
-                    lock jobs (fun () -> 
-                        if jobs.Count = 0 then
-                            available <- AsyncResultCell()
-                            None
-                        else Some (jobs.Dequeue ()))
-                match job with
-                | None -> return! loop ()
-                | Some job ->
-                    do! job 
-                    return! loop () }
-        do loop () |> Async.StartImmediate
-        interface IDisposable with member __.Dispose() = stop <- true
+            let job =
+                lock jobs (fun () -> 
+                    if jobs.Count > 0 then Some (jobs.Dequeue ())
+                    else 
+                        running <- false
+                        None)
+            match job with
+            | None -> ()
+            | Some (job, finished) ->
+                Async.Start job
+                do! finished.AsyncResult
+                return! loop () }
         member __.Enqueue(job : Async<'A>) : Async<'A> =
-            if stop then failwith "The sequencer is stopped!"
             let res = AsyncResultCell()
+            let finished = AsyncResultCell()
             let job = async {
                 try
                     let! z = job
                     res.RegisterResult (AsyncOk z)
                 with e -> 
-                    return res.RegisterResult (AsyncException e) }
+                    return res.RegisterResult (AsyncException e)
+                finished.RegisterResult (AsyncOk ()) }
             lock jobs (fun () ->
-                if jobs.Count = 0 then available.RegisterResult (AsyncOk ())
-                jobs.Enqueue(job))
+                jobs.Enqueue(job, finished)
+                if running = false then Async.Start (loop ()))
             res.AsyncResult
 
     type Result<'A, 'B> =
@@ -613,9 +609,7 @@ module Async =
             let txn : ref<Option<'TXN>> = ref None
             let savepoints = Stack<String>()
             return { new db with
-                member __.Dispose() = 
-                    (seq :> IDisposable).Dispose()
-                    con.Dispose()
+                member __.Dispose() = con.Dispose()
                 member db.NoRetry(f) = f db
                 member __.NonQuery(q, a) = seq.Enqueue (async {
                     let cmd = getCmd prepared con provider q
@@ -724,7 +718,6 @@ module Async =
                     try return! f db
                     finally safeToRetry <- true })
                 member __.Dispose() = 
-                    (seq :> IDisposable).Dispose ()
                     disposed <- true
                     dispose () 
                 member __.NonQuery(q, a) = withDb (fun db -> db.NonQuery(q, a))

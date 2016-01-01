@@ -48,7 +48,7 @@ let create (csb: NpgsqlConnectionStringBuilder) =
         member __.InsertObject(con, tbl, columns) = (fun items -> 
             if not (Seq.isEmpty items) then
                 let sql = 
-                    sprintf "copy %s(%s) from stdin" tbl (String.Join (", ", columns))
+                    sprintf "COPY %s (%s) FROM STDIN BINARY" tbl (String.Join (", ", columns))
                 use w = con.BeginBinaryImport(sql)
                 items |> Seq.iter (fun o ->
                     w.StartRow()

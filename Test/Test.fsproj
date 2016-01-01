@@ -51,8 +51,8 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="AssemblyInfo.fs" />
-    <Compile Include="Main.fs" />
-    <None Include="Script.fsx" />
+    <Compile Include="TestPostgreSQL.fs" />
+    <Compile Include="TestSQLite.fs" />
     <None Include="App.config" />
     <None Include="paket.references" />
   </ItemGroup>
@@ -83,6 +83,11 @@
     <ProjectReference Include="..\FLenser.Core\FLenser.Core.fsproj">
       <Name>FLenser.Core</Name>
       <Project>{ef8814fa-fef7-4ff4-be54-c5b4bf3cb826}</Project>
+      <Private>True</Private>
+    </ProjectReference>
+    <ProjectReference Include="..\FLenser.PostgreSQL\FLenser.PostgreSQL.fsproj">
+      <Name>FLenser.PostgreSQL</Name>
+      <Project>{22e1c399-8efd-4050-86f1-df5f48f7ba90}</Project>
       <Private>True</Private>
     </ProjectReference>
     <ProjectReference Include="..\FLenser.SQLite\FLenser.SQLite.fsproj">
@@ -277,6 +282,17 @@
       <ItemGroup>
         <Reference Include="Newtonsoft.Json">
           <HintPath>..\packages\Newtonsoft.Json\lib\portable-net40+sl5+wp80+win8+wpa81\Newtonsoft.Json.dll</HintPath>
+          <Private>True</Private>
+          <Paket>True</Paket>
+        </Reference>
+      </ItemGroup>
+    </When>
+  </Choose>
+  <Choose>
+    <When Condition="$(TargetFrameworkIdentifier) == '.NETFramework' And ($(TargetFrameworkVersion) == 'v4.5' Or $(TargetFrameworkVersion) == 'v4.5.1' Or $(TargetFrameworkVersion) == 'v4.5.2' Or $(TargetFrameworkVersion) == 'v4.5.3' Or $(TargetFrameworkVersion) == 'v4.6' Or $(TargetFrameworkVersion) == 'v4.6.1')">
+      <ItemGroup>
+        <Reference Include="Npgsql">
+          <HintPath>..\packages\Npgsql\lib\net45\Npgsql.dll</HintPath>
           <Private>True</Private>
           <Paket>True</Paket>
         </Reference>
