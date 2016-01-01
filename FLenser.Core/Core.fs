@@ -553,24 +553,16 @@ type IProvider<'CON, 'PAR, 'TXN
     abstract member RollbackNested: 'CON * 'TXN * String -> unit
     abstract member CommitNested: 'CON * 'TXN * String -> unit
 
-type asyncdb =
-    inherit IDisposable
-    abstract member Query: query<'A, 'B> * 'A -> Async<List<'B>>
-    abstract member NonQuery: query<'A, NonQuery> * 'A -> Async<int>
-    abstract member Insert: table:String * lens<'A> * seq<'A> -> Async<unit>
-    abstract member Transaction: (asyncdb -> Async<'a>) -> Async<'a>
-    abstract member NoRetry: (asyncdb -> Async<'A>) -> Async<'A>
+module Async =
+    type db =
+        inherit IDisposable
+        abstract member Query: query<'A, 'B> * 'A -> Async<List<'B>>
+        abstract member NonQuery: query<'A, NonQuery> * 'A -> Async<int>
+        abstract member Insert: table:String * lens<'A> * seq<'A> -> Async<unit>
+        abstract member Transaction: (db -> Async<'a>) -> Async<'a>
+        abstract member NoRetry: (db -> Async<'A>) -> Async<'A>
 
-type db =
-    inherit IDisposable
-    abstract member Query: query<'A, 'B> * 'A -> List<'B>
-    abstract member NonQuery: query<'A, NonQuery> * 'A -> int
-    abstract member Insert: table:String * lens<'A> * seq<'A> -> unit
-    abstract member Transaction: (db -> 'a) -> 'a
-    abstract member NoRetry: (db -> 'A) -> 'A
-
-type Db internal () =
-    static let getCmd (prepared: Dictionary<Guid, DbCommand>) 
+    let getCmd (prepared: Dictionary<Guid, DbCommand>) 
         (con: #DbConnection) (provider: IProvider<_,_,_>) (q: query<_,_>)= 
         match prepared.TryFind q.Guid with
         | Some cmd -> cmd 
@@ -586,7 +578,8 @@ type Db internal () =
             prepared.[q.Guid] <- cmd
             q.PushDispose (fun () -> ignore (prepared.Remove q.Guid))
             cmd
-    static let buildTxn (txn: ref<Option<#DbTransaction>>) (provider: IProvider<_,_,_>) 
+
+    let buildTxn (txn: ref<Option<#DbTransaction>>) (provider: IProvider<_,_,_>) 
         (savepoints: Stack<String>) (con: #DbConnection) =
         lock txn (fun () -> 
             let std (t: DbTransaction) =
@@ -607,6 +600,146 @@ type Db internal () =
                         provider.RollbackNested(con, t, savepoints.Pop ()))),
                     (fun () -> lock txn (fun () ->
                         provider.CommitNested(con, t, savepoints.Pop()))))
+
+    type Db =
+        static member Connect(provider: IProvider<_,_,'TXN>) = async {
+            let! con = provider.ConnectAsync ()
+            let seq = new Sequencer()
+            let prepared = Dictionary<Guid, DbCommand>()
+            let preparedInserts = 
+                Dictionary<Guid, Dictionary<Guid, DbParameter>
+                                 * DbParameter[]
+                                 * (seq<obj[]> -> Async<unit>)>()
+            let txn : ref<Option<'TXN>> = ref None
+            let savepoints = Stack<String>()
+            return { new db with
+                member __.Dispose() = 
+                    (seq :> IDisposable).Dispose()
+                    con.Dispose()
+                member db.NoRetry(f) = f db
+                member __.NonQuery(q, a) = seq.Enqueue (async {
+                    let cmd = getCmd prepared con provider q
+                    q.Set (cmd.Parameters, a)
+                    let! i = cmd.ExecuteNonQueryAsync() |> Async.AwaitTask
+                    return i })
+                member __.Query(q, a) = seq.Enqueue (async {
+                    let read (lens : lens<'B>) (r: DbDataReader) =
+                        let l = List<'B>(capacity = 4)
+                        let rec loop () = async {
+                            let! res = r.ReadAsync() |> Async.AwaitTask
+                            if not res then
+                                if not r.IsClosed then r.Close ()
+                                return l
+                            else
+                                l.Add (lens.Project r)
+                                return! loop () }
+                        loop ()
+                    let cmd = getCmd prepared con provider q
+                    q.Set (cmd.Parameters, a)
+                    let! r = cmd.ExecuteReaderAsync() |> Async.AwaitTask
+                    return! read q.Lens r })
+                member __.Insert(table, lens: lens<'A>, a: seq<'A>) = seq.Enqueue(async {
+                    let (pars, pararray, run) = 
+                        match preparedInserts.TryFind lens.Guid with
+                        | Some x -> x
+                        | None ->
+                            let pars = 
+                                lens.CreateParams (fun name -> 
+                                    (provider.CreateParameter name :> DbParameter))
+                            let pararray = pars |> Seq.map (fun kv -> kv.Value) |> Seq.toArray
+                            let run = 
+                                provider.InsertObjectAsync(con, table, 
+                                    pararray |> Array.map (fun p -> p.ParameterName))
+                            preparedInserts.[lens.Guid] <- (pars, pararray, run)
+                            (pars, pararray, run)
+                    let a = a |> Seq.map (fun a ->
+                        lens.Inject(pars, a)
+                        pararray |> Array.map (fun p -> p.Value))
+                    return! run a })
+                member db.Transaction(f) = async {
+                    let (rollback, commit) = buildTxn txn provider savepoints con
+                    try
+                        let! res = f db
+                        commit ()
+                        return res
+                    with e -> rollback (); return raise e } } }
+
+        static member WithRetries(provider: IProvider<_,_,_>, ?log, ?tries) = async {
+            let log = defaultArg log ignore
+            let tries = defaultArg tries 3
+            let seq = new Sequencer()
+            let mutable lastGoodDb : Option<db> = None
+            let connect () = async {
+                let! con = Db.Connect(provider)
+                lastGoodDb <- Some con
+                return con }
+            let mutable con : Result<db, exn> = Error (Failure "not connected")
+            let mutable disposed : bool = false 
+            let mutable safeToRetry : bool = true
+            let dispose () = match con with Error _ -> () | Ok o -> try o.Dispose () with _ -> ()
+            let reconnect () = async {
+                dispose () 
+                try
+                    let! db = connect ()
+                    con <- Ok db
+                with e -> con <- Error e }
+            let withDb f = seq.Enqueue (async {
+                if disposed then failwith "error attempted to use disposed IDb"
+                let rec loop i = async {
+                    match con with
+                    | Ok db -> 
+                        try return! f db 
+                        with e ->
+                            try log e with _ -> ()
+                            return! retry i e
+                    | Error e -> return! retry i e }
+                and retry i e = async { 
+                    if i >= tries || not safeToRetry then return raise e 
+                    else
+                        do! Async.Sleep 1000
+                        do! reconnect ()
+                        return! loop (i + 1) }
+                match con with 
+                | Error _ -> do! reconnect () 
+                | Ok _ -> ()
+                return! loop 0 })
+            let rec loop i = async {
+                do! reconnect ()
+                match con with
+                | Error e when i < tries ->
+                    try log e with _ -> ()
+                    do! Async.Sleep 1000
+                    return! loop (i + 1)
+                | Error e -> return raise e
+                | Ok _ -> () }
+            // make sure if we can't connect we fail early
+            do! seq.Enqueue(loop 0)
+            let getLastGoodDb () = 
+                match lastGoodDb with
+                | None -> failwith "bug withRetries returned without initializing"
+                | Some db -> db
+            return { new db with
+                member __.NoRetry(f) = withDb (fun db -> async {
+                    safeToRetry <- false
+                    try return! f db
+                    finally safeToRetry <- true })
+                member __.Dispose() = 
+                    (seq :> IDisposable).Dispose ()
+                    disposed <- true
+                    dispose () 
+                member __.NonQuery(q, a) = withDb (fun db -> db.NonQuery(q, a))
+                member __.Query(q, a) = withDb (fun db -> db.Query(q, a))
+                member __.Insert(t, l, a) = withDb (fun db -> db.Insert(t, l, a))
+                member __.Transaction(f) = withDb (fun db -> db.Transaction f) } }
+
+type db =
+    inherit IDisposable
+    abstract member Query: query<'A, 'B> * 'A -> List<'B>
+    abstract member NonQuery: query<'A, NonQuery> * 'A -> int
+    abstract member Insert: table:String * lens<'A> * seq<'A> -> unit
+    abstract member Transaction: (db -> 'a) -> 'a
+
+type Db internal () =
     static member Connect(provider: IProvider<_, _, 'TXN>) = 
         let con = provider.Connect ()
         let prepared = Dictionary<Guid, DbCommand>()
@@ -618,9 +751,8 @@ type Db internal () =
         let savepoints = Stack<String>()
         { new db with
             member __.Dispose() = con.Dispose()
-            member db.NoRetry(f) = f db
             member __.NonQuery(q, a) = lock con (fun () -> 
-                let cmd = getCmd prepared con provider q
+                let cmd = Async.getCmd prepared con provider q
                 q.Set (cmd.Parameters, a)
                 cmd.ExecuteNonQuery())
             member __.Query(q, a) = lock con (fun () -> 
@@ -634,7 +766,7 @@ type Db internal () =
                             l.Add (lens.Project r)
                             loop ()
                     loop ()
-                let cmd = getCmd prepared con provider q
+                let cmd = Async.getCmd prepared con provider q
                 q.Set (cmd.Parameters, a)
                 let r = cmd.ExecuteReader()
                 read q.Lens r)
@@ -657,140 +789,9 @@ type Db internal () =
                     pararray |> Array.map (fun p -> p.Value))
                 run a
             member db.Transaction(f) =
-                let (rollback, commit) = buildTxn txn provider savepoints con
+                let (rollback, commit) = Async.buildTxn txn provider savepoints con
                 try
                     let res = f db
                     commit ()
                     res
                 with e -> rollback (); raise e }
-
-    static member ConnectAsync(provider: IProvider<_,_,'TXN>) = async {
-        let! con = provider.ConnectAsync ()
-        let seq = new Sequencer()
-        let prepared = Dictionary<Guid, DbCommand>()
-        let preparedInserts = 
-            Dictionary<Guid, Dictionary<Guid, DbParameter>
-                             * DbParameter[]
-                             * (seq<obj[]> -> Async<unit>)>()
-        let txn : ref<Option<'TXN>> = ref None
-        let savepoints = Stack<String>()
-        return { new asyncdb with
-            member __.Dispose() = 
-                (seq :> IDisposable).Dispose()
-                con.Dispose()
-            member db.NoRetry(f) = f db
-            member __.NonQuery(q, a) = seq.Enqueue (async {
-                let cmd = getCmd prepared con provider q
-                q.Set (cmd.Parameters, a)
-                let! i = cmd.ExecuteNonQueryAsync() |> Async.AwaitTask
-                return i })
-            member __.Query(q, a) = seq.Enqueue (async {
-                let read (lens : lens<'B>) (r: DbDataReader) =
-                    let l = List<'B>(capacity = 4)
-                    let rec loop () = async {
-                        let! res = r.ReadAsync() |> Async.AwaitTask
-                        if not res then
-                            if not r.IsClosed then r.Close ()
-                            return l
-                        else
-                            l.Add (lens.Project r)
-                            return! loop () }
-                    loop ()
-                let cmd = getCmd prepared con provider q
-                q.Set (cmd.Parameters, a)
-                let! r = cmd.ExecuteReaderAsync() |> Async.AwaitTask
-                return! read q.Lens r })
-            member __.Insert(table, lens: lens<'A>, a: seq<'A>) = seq.Enqueue(async {
-                let (pars, pararray, run) = 
-                    match preparedInserts.TryFind lens.Guid with
-                    | Some x -> x
-                    | None ->
-                        let pars = 
-                            lens.CreateParams (fun name -> 
-                                (provider.CreateParameter name :> DbParameter))
-                        let pararray = pars |> Seq.map (fun kv -> kv.Value) |> Seq.toArray
-                        let run = 
-                            provider.InsertObjectAsync(con, table, 
-                                pararray |> Array.map (fun p -> p.ParameterName))
-                        preparedInserts.[lens.Guid] <- (pars, pararray, run)
-                        (pars, pararray, run)
-                let a = a |> Seq.map (fun a ->
-                    lens.Inject(pars, a)
-                    pararray |> Array.map (fun p -> p.Value))
-                return! run a })
-            member db.Transaction(f) = async {
-                let (rollback, commit) = buildTxn txn provider savepoints con
-                try
-                    let! res = f db
-                    commit ()
-                    return res
-                with e -> rollback (); return raise e } } }
-
-    static member WithRetries(provider: IProvider<_,_,_>, ?log, ?tries) = async {
-        let log = defaultArg log ignore
-        let tries = defaultArg tries 3
-        let seq = new Sequencer()
-        let mutable lastGoodDb : Option<asyncdb> = None
-        let connect () = async {
-            let! con = Db.ConnectAsync(provider)
-            lastGoodDb <- Some con
-            return con }
-        let mutable con : Result<asyncdb, exn> = Error (Failure "not connected")
-        let mutable disposed : bool = false 
-        let mutable safeToRetry : bool = true
-        let dispose () = match con with Error _ -> () | Ok o -> try o.Dispose () with _ -> ()
-        let reconnect () = async {
-            dispose () 
-            try
-                let! db = connect ()
-                con <- Ok db
-            with e -> con <- Error e }
-        let withDb f = seq.Enqueue (async {
-            if disposed then failwith "error attempted to use disposed IDb"
-            let rec loop i = async {
-                match con with
-                | Ok db -> 
-                    try return! f db 
-                    with e ->
-                        try log e with _ -> ()
-                        return! retry i e
-                | Error e -> return! retry i e }
-            and retry i e = async { 
-                if i >= tries || not safeToRetry then return raise e 
-                else
-                    do! Async.Sleep 1000
-                    do! reconnect ()
-                    return! loop (i + 1) }
-            match con with 
-            | Error _ -> do! reconnect () 
-            | Ok _ -> ()
-            return! loop 0 })
-        let rec loop i = async {
-            do! reconnect ()
-            match con with
-            | Error e when i < tries ->
-                try log e with _ -> ()
-                do! Async.Sleep 1000
-                return! loop (i + 1)
-            | Error e -> return raise e
-            | Ok _ -> () }
-        // make sure if we can't connect we fail early
-        do! seq.Enqueue(loop 0)
-        let getLastGoodDb () = 
-            match lastGoodDb with
-            | None -> failwith "bug withRetries returned without initializing"
-            | Some db -> db
-        return { new asyncdb with
-            member __.NoRetry(f) = withDb (fun db -> async {
-                safeToRetry <- false
-                try return! f db
-                finally safeToRetry <- true })
-            member __.Dispose() = 
-                (seq :> IDisposable).Dispose ()
-                disposed <- true
-                dispose () 
-            member __.NonQuery(q, a) = withDb (fun db -> db.NonQuery(q, a))
-            member __.Query(q, a) = withDb (fun db -> db.Query(q, a))
-            member __.Insert(t, l, a) = withDb (fun db -> db.Insert(t, l, a))
-            member __.Transaction(f) = withDb (fun db -> db.Transaction f) } }
-

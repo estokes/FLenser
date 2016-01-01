@@ -70,7 +70,7 @@ cs.JournalMode <- SQLiteJournalModeEnum.Off
 cs.CacheSize <- 0
 
 let setupasync () = async {
-    let! db = Db.ConnectAsync(FLenser.SQLite.Provider.create cs)
+    let! db = Async.Db.Connect(FLenser.SQLite.Provider.create cs)
     let! _ = db.NonQuery(init, ())
     do! db.Transaction (fun db -> db.Insert("foo", lens, items))
     return db }

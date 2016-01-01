@@ -254,31 +254,44 @@ type IProvider<'CON, 'PAR, 'TXN
     abstract member RollbackNested: 'CON * 'TXN * String -> unit
     abstract member CommitNested: 'CON * 'TXN * String -> unit
 
-type asyncdb =
-    inherit IDisposable
+module Async =
+    type db =
+        inherit IDisposable
 
-    // Execute a query, returning it's result
-    abstract member Query: query<'A, 'B> * 'A -> Async<List<'B>>
+        // Execute a query, returning it's result
+        abstract member Query: query<'A, 'B> * 'A -> Async<List<'B>>
 
-    // Execute a mutator, returning the number of rows altered
-    abstract member NonQuery: query<'A, NonQuery> * 'A -> Async<int>
+        // Execute a mutator, returning the number of rows altered
+        abstract member NonQuery: query<'A, NonQuery> * 'A -> Async<int>
 
-    // insert the sequence of objects into the named table using the 
-    // specified lens. Most providers implement this with a special db
-    // specific bulk insertion mechanism. For example COPY in Postgresql.
-    abstract member Insert: table:String * lens<'A> * seq<'A> -> Async<unit>
+        // insert the sequence of objects into the named table using the 
+        // specified lens. Most providers implement this with a special db
+        // specific bulk insertion mechanism. For example COPY in Postgresql.
+        abstract member Insert: table:String * lens<'A> * seq<'A> -> Async<unit>
 
-    // Execute a set of Query and NonQuery calls as an atomic transaction.
-    // In the transaction you must use ONLY the db object passed
-    // in to you. You must not keep a reference to this object that
-    // lives longer than the scope of the function.
-    abstract member Transaction: (asyncdb -> Async<'a>) -> Async<'a>
+        // Execute a set of Query and NonQuery calls as an atomic transaction.
+        // In the transaction you must use ONLY the db object passed
+        // in to you. You must not keep a reference to this object that
+        // lives longer than the scope of the function.
+        abstract member Transaction: (db -> Async<'a>) -> Async<'a>
 
-    // If this db would normally retry on error, turn that off
-    // for every operation done inside the closure.
-    // Within the closure you much used the passed in db object, and
-    // you must not save that object anywhere.
-    abstract member NoRetry: (asyncdb -> Async<'A>) -> Async<'A>
+        // If this db would normally retry on error, turn that off
+        // for every operation done inside the closure.
+        // Within the closure you much used the passed in db object, and
+        // you must not save that object anywhere.
+        abstract member NoRetry: (db -> Async<'A>) -> Async<'A>
+
+    [<Class>]
+    type Db =
+        static member Connect: IProvider<_,_,_> -> Async<db>
+
+        // This will return a db that will retry queries marked safetoretry
+        // on error. This may in rare cases result in multiple successful executions
+        // of a query, so ensure that queries marked safe to retry are idempotent
+        static member WithRetries: IProvider<_,_,_>
+            * ?log:(Exception -> unit) 
+            * ?tries:int 
+            -> Async<db>
 
 type db =
     inherit IDisposable
@@ -286,7 +299,6 @@ type db =
     abstract member NonQuery: query<'A, NonQuery> * 'A -> int
     abstract member Insert: table:String * lens<'A> * seq<'A> -> unit
     abstract member Transaction: (db -> 'a) -> 'a
-    abstract member NoRetry: (db -> 'A) -> 'A
 
 [<Class>]
 type Db =
@@ -294,13 +306,3 @@ type Db =
     // with caution. However if you have an in memory db it can reduce
     // overhead significantly. Most users will want ConnectAsync.
     static member Connect: IProvider<_,_,_> -> db
-
-    static member ConnectAsync: IProvider<_,_,_> -> Async<asyncdb>
-
-    // This will return a db that will retry queries marked safetoretry
-    // on error. This may in rare cases result in multiple successful executions
-    // of a query, so ensure that queries marked safe to retry are idempotent
-    static member WithRetries: IProvider<_,_,_>
-        * ?log:(Exception -> unit) 
-        * ?tries:int 
-        -> Async<asyncdb>
