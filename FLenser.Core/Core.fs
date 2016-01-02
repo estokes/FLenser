@@ -30,6 +30,11 @@ exception UnexpectedNull
 type virtualRecordField<'A> = 'A -> obj
 type virtualDbField = String -> DbDataReader -> obj
 
+type internal rawLens = 
+    abstract member Columns: String[] with get
+    abstract member InjectRaw: obj[] * int * obj -> unit
+    abstract member ProjectRaw: DbDataReader -> obj
+
 type lens<'A> internal (columns: String[], 
                         inject: obj[] -> int -> 'A -> unit, 
                         project: DbDataReader -> 'A) =
@@ -38,6 +43,11 @@ type lens<'A> internal (columns: String[],
     member __.Columns with get() = columns
     member internal __.Inject(target: obj[], startidx:int, v) = inject target startidx v
     member internal __.Project(r) = project r
+    interface rawLens with
+        member __.Columns with get() = columns
+        member o.InjectRaw(target: obj[], startidx: int, v : obj) =
+           o.Inject(target, startidx, v :?> 'A)
+        member o.ProjectRaw(r) = box (project r)
 
 type NonQuery = {nothing: unit}
 
@@ -149,11 +159,11 @@ type Lens =
                            && ptyp.GUID = typeof<Option<_>>.GUID
                            && ptyp.GenericTypeArguments.[0] = typeof<String>)
                     then 
-                        let lens = mi.Invoke(null, [|(Some prefix) :> obj|]) :?> lens<_>
+                        let lens = mi.Invoke(null, [|(Some prefix) :> obj|]) :?> rawLens
                         let startidx = columns.Count
                         columns.AddRange lens.Columns
-                        ((fun a startidx' o -> lens.Inject(a, startidx + startidx', reader o)), 
-                         lens.Project)
+                        ((fun a startidx' o -> lens.InjectRaw(a, startidx + startidx', reader o)), 
+                         lens.ProjectRaw)
                     else failwith 
                             (sprintf "CreateSubLens marked method does not 
                                       match the required signature
@@ -206,7 +216,17 @@ type Lens =
             let getp (r: DbDataReader) name f = f (ord r name)
             let primitives = 
                 let std r n = getp r n r.GetValue
-                [ typeof<Boolean>.GUID, std
+                [ typeof<Boolean>.GUID, 
+                    (fun r n -> getp r n (fun i ->
+                        // sqlite stores bool as int
+                        match r.GetValue i with
+                        | :? bool as x -> x
+                        | :? byte as x -> x > 0uy
+                        | :? int16 as x -> x > 0s
+                        | :? int32 as x -> x > 0
+                        | :? int64 as x -> x > 0L
+                        | o -> failwith (sprintf "can't cast %A to boolean" o)
+                        |> box))
                   typeof<Double>.GUID, std
                   typeof<String>.GUID, std
                   typeof<DateTime>.GUID, std

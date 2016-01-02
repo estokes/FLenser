@@ -44,7 +44,7 @@ let create (cs: SQLiteConnectionStringBuilder) =
             let cmd = new SQLiteCommand(sql, con)
             cmd.Parameters.AddRange pars
             cmd.Prepare ()
-            let set (o : obj[]) = for i=0 to o.Length do pars.[i].Value <- o.[i]
+            let set (o : obj[]) = for i=0 to o.Length - 1 do pars.[i].Value <- o.[i]
             {new PreparedInsert with
                 member __.Dispose() = cmd.Dispose()
                 member __.Row(o) =

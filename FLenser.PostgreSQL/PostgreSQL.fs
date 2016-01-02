@@ -79,7 +79,7 @@ let create (csb: NpgsqlConnectionStringBuilder) =
                             w <- Some b
                             b
                     w.StartRow()
-                    for i=0 to Array.length o - 1 do
+                    for i=0 to o.Length - 1 do
                         match o.[i] with
                         | null -> w.WriteNull()
                         | :? bool as x -> w.Write<bool>(x, NpgsqlDbType.Boolean)
