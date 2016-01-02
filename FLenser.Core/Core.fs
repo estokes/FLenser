@@ -643,7 +643,7 @@ module Async =
                     return i })
                 member __.Query(q, a) = seq.Enqueue (async {
                     let read (lens : lens<'B>) (r: DbDataReader) =
-                        let l = List<'B>(capacity = 4)
+                        let l = List<'B>(capacity = 1)
                         let rec loop () = async {
                             let! res = r.ReadAsync() |> Async.AwaitTask
                             if not res then
@@ -768,7 +768,7 @@ type Db internal () =
                 cmd.ExecuteNonQuery())
             member __.Query(q, a) = lock con (fun () -> 
                 let read (lens : lens<'B>) (r: DbDataReader) =
-                    let l = List<'B>(capacity = 4)
+                    let l = List<'B>(capacity = 1)
                     let rec loop () =
                         if not (r.Read ()) then
                             if not r.IsClosed then r.Close ()

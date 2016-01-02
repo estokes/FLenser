@@ -141,22 +141,25 @@ let testSpeedAsync () =
 
 [<EntryPoint>]
 let main argv = 
-    let cs = SQLiteConnectionStringBuilder("DataSource=:memory:")
-    cs.JournalMode <- SQLiteJournalModeEnum.Off
-    cs.CacheSize <- 0
-    async {
-        let! db = setupasync ()
-        let! i1 = db.Query(T1.byItem, "foo")
-        if i1.[0] <> List.head T1.items then failwith (sprintf "0: %A" i1.[0])
-        let! _ = db.NonQuery(T1.changeBar, ("hello", 0L))
-        let! i2 = db.Query(T1.byItem, "foo")
-        if i2.[0] = List.head T1.items then failwith (sprintf "1: %A" i2.[0])
-        if i2.[0] <> {(List.head T1.items) with 
-                            thing = T1.A {foo = 42; bar = "hello"; baz = None}}
-        then failwith (sprintf "2: %A" i2.[0])
-        let! i3 = db.Query(T2.byCat, "foofoo")
-        if i3.[0] <> List.head T2.items then failwith (sprintf "2: %A" i3.[0])
-        let! i4 = db.Query(joined, ())
-        i4 |> Seq.iter (printfn "%A")
-    } |> Async.RunSynchronously
+    if argv.Length = 1 && argv.[0] = "speed" then
+        testSpeed ()
+    else
+        let cs = SQLiteConnectionStringBuilder("DataSource=:memory:")
+        cs.JournalMode <- SQLiteJournalModeEnum.Off
+        cs.CacheSize <- 0
+        async {
+            let! db = setupasync ()
+            let! i1 = db.Query(T1.byItem, "foo")
+            if i1.[0] <> List.head T1.items then failwith (sprintf "0: %A" i1.[0])
+            let! _ = db.NonQuery(T1.changeBar, ("hello", 0L))
+            let! i2 = db.Query(T1.byItem, "foo")
+            if i2.[0] = List.head T1.items then failwith (sprintf "1: %A" i2.[0])
+            if i2.[0] <> {(List.head T1.items) with 
+                                thing = T1.A {foo = 42; bar = "hello"; baz = None}}
+            then failwith (sprintf "2: %A" i2.[0])
+            let! i3 = db.Query(T2.byCat, "foofoo")
+            if i3.[0] <> List.head T2.items then failwith (sprintf "2: %A" i3.[0])
+            let! i4 = db.Query(joined, ())
+            i4 |> Seq.iter (printfn "%A")
+        } |> Async.RunSynchronously
     0
