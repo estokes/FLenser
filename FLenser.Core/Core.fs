@@ -218,7 +218,6 @@ type Lens =
                 let std r n = getp r n r.GetValue
                 [ typeof<Boolean>.GUID, 
                     (fun r n -> getp r n (fun i ->
-                        // sqlite stores bool as int
                         match r.GetValue i with
                         | :? bool as x -> x
                         | :? byte as x -> x > 0uy
@@ -229,8 +228,20 @@ type Lens =
                         |> box))
                   typeof<Double>.GUID, std
                   typeof<String>.GUID, std
-                  typeof<DateTime>.GUID, std
-                  typeof<TimeSpan>.GUID, std
+                  typeof<DateTime>.GUID, 
+                    (fun r n -> getp r n (fun i ->
+                        match r.GetValue i with
+                        | :? DateTime as x -> x
+                        | :? String as x -> DateTime.Parse x
+                        | o -> failwith (sprintf "can't cast %A to DateTime" o)
+                        |> box))
+                  typeof<TimeSpan>.GUID, 
+                    (fun r n -> getp r n (fun i ->
+                        match r.GetValue i with
+                        | :? TimeSpan as x -> x
+                        | :? String as x -> TimeSpan.Parse x
+                        | o -> failwith (sprintf "can't cast %A to TimeSpan" o)
+                        |> box))
                   typeof<byte[]>.GUID, std
                   typeof<int>.GUID, 
                     (fun r n -> getp r n (fun i ->
@@ -346,7 +357,7 @@ type Lens =
                             (fun v -> 
                                 box (e.GetString (jsonSer.PickleUntyped(reader v, pk))))
                             (fun r n -> 
-                                let s = r.GetString(ord r n).Substring 1
+                                let s = r.GetString(ord r n)
                                 jsonSer.UnPickleUntyped(e.GetBytes s, pk, encoding = e))
                             fld false)
             let construct = 

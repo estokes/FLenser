@@ -95,8 +95,8 @@ module T2 =
         Query.Create(sprintf "create table bar (%s)" cols, Lens.NonQuery)
 
     let items =
-        [{a = 123; b = 0.2324; c = "bar"; thing = {id = 0L; x = "foo"; testing = false}}
-         {a = 42; b = 42.2324; c = "baz"; thing = {id = 0L; x = "rab"; testing = false}}]
+        [{a = 123; b = 0.2324; c = "bar"; thing = {id = 1L; x = "foo"; testing = false}}
+         {a = 42; b = 42.2324; c = "baz"; thing = {id = 2L; x = "rab"; testing = false}}]
 
     let byCat = 
         Query.Create("select * from bar where thing$cat = :p", lens, Parameter.String("p"))
