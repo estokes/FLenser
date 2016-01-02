@@ -78,7 +78,8 @@ type virtualDbField = String -> DbDataReader -> obj
    type x = {foo: Option<String>} <==> create table _ (foo text)
    if column foo is null for a specific row then {foo = None} will be
    generated. If {foo = None} is inserted, then column foo will be set
-   to null.
+   to null. This doesn't apply to sub records, which need a field to
+   identify whether they are Some or None.
   
    Sub records can be optional, Variants may not
    type y = {foo: Option<t>} <==> create table _ (foo$x int, foo$y text)

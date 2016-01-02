@@ -290,21 +290,6 @@ type Lens =
                                   ityp.IsArray && ityp.HasElementType
                                   && Map.containsKey (ityp.GetElementType()).GUID primitives ->
                         primOpt reader id (fun r n -> getp r n r.GetValue) fld
-                    | typ when (typ.GUID = typeof<Option<_>>.GUID
-                                && FSharpType.IsRecord(typ.GenericTypeArguments.[0])) ->
-                        option typ (fun none some get tag mkNone mkSome rtyp ->
-                            let prefix = prefix + fld.Name + "$"
-                            let (inject, project) = subRecord rtyp id prefix
-                            let inject cols startidx record =
-                                let opt = reader record
-                                let tag = tag opt
-                                if tag = none.Tag then ()
-                                else if tag = some.Tag then inject cols startidx (get opt)
-                                else failwith "not supposed to get here!"
-                            let project (r: DbDataReader) =
-                                try mkSome [|project r|]
-                                with _ -> mkNone [||]
-                            (inject, project))
                     | typ when FSharpType.IsUnion(typ, true)
                                && typ.GenericTypeArguments = [||]
                                && (FSharpType.GetUnionCases(typ)

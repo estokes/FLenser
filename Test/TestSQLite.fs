@@ -95,7 +95,7 @@ module T2 =
         Query.Create(sprintf "create table bar (%s)" cols, Lens.NonQuery)
 
     let items =
-        [{a = 123; b = 0.2324; c = "bar"; thing = {id = 1L; x = "foo"; testing = false}}
+        [{a = 123; b = 0.2324; c = "bar"; thing = {id = 1L; x = "foo"; testing = true}}
          {a = 42; b = 42.2324; c = "baz"; thing = {id = 2L; x = "rab"; testing = false}}]
 
     let byCat = 
@@ -130,7 +130,7 @@ let setup () =
 let testSpeed () = 
     let db = setup ()
     for i=0 to 999999 do
-        ignore (db.Query(T1.byItem, "bar"))
+        ignore (db.Query(T1.byItem, "foo"))
 
 let testSpeedAsync () = 
     async {
@@ -157,6 +157,6 @@ let main argv =
         let! i3 = db.Query(T2.byCat, "foofoo")
         if i3.[0] <> List.head T2.items then failwith (sprintf "2: %A" i3.[0])
         let! i4 = db.Query(joined, ())
-        i4 |> Seq.iter (printf "%A")
+        i4 |> Seq.iter (printfn "%A")
     } |> Async.RunSynchronously
     0
