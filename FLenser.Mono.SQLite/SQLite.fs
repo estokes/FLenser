@@ -17,31 +17,31 @@ module FLenser.Mono.SQLite.Provider
 open System
 open FSharpx
 open FSharpx.Control
-open System.Data.SQLite
+open Mono.Data.Sqlite
 open FLenser.Core
 
-let create (cs: SQLiteConnectionStringBuilder) =
+let create (cs: SqliteConnectionStringBuilder) =
     let mutable savepoint = 0
-    {new Provider<SQLiteConnection, SQLiteParameter, SQLiteTransaction> with
+    {new Provider<SqliteConnection, SqliteParameter, SqliteTransaction> with
          member __.Dispose() = ()
          member __.ConnectAsync() = async {
-            let con = new SQLiteConnection(cs.ConnectionString)
+            let con = new SqliteConnection(cs.ConnectionString)
             do! con.OpenAsync() |> Async.AwaitTask
             return con }
 
          member __.Connect() = 
-            let con = new SQLiteConnection(cs.ConnectionString)
+            let con = new SqliteConnection(cs.ConnectionString)
             con.Open ()
             con
 
-         member __.CreateParameter(name, _) = SQLiteParameter(name)
+         member __.CreateParameter(name, _) = SqliteParameter(name)
          member __.PrepareInsert(con, table, columns) =
-            let pars = columns |> Array.map (fun (n: String) -> SQLiteParameter(n))
+            let pars = columns |> Array.map (fun (n: String) -> SqliteParameter(n))
             let parnames = columns |> Array.map (fun n -> ":" + n)
             let sql = 
                 sprintf "INSERT INTO %s (%s) VALUES (%s)"
                     table (String.Join(", ", columns)) (String.Join(", ", parnames))
-            let cmd = new SQLiteCommand(sql, con)
+            let cmd = new SqliteCommand(sql, con)
             cmd.Parameters.AddRange pars
             cmd.Prepare ()
             let set (o : obj[]) = for i=0 to o.Length - 1 do pars.[i].Value <- o.[i]

@@ -15,8 +15,8 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>. *)
 module FLenser.Mono.SQLite.Provider
 open System
-open Mono.Data.SQLite
+open Mono.Data.Sqlite
 open FLenser.Core
 
-val create: SQLiteConnectionStringBuilder 
-    -> Provider<SQLiteConnection,SQLiteParameter,SQLiteTransaction>
+val create: SqliteConnectionStringBuilder 
+    -> Provider<SqliteConnection,SqliteParameter,SqliteTransaction>
