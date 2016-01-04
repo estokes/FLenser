@@ -331,7 +331,7 @@ type Lens =
                 let injectAndProject = c.GetFields() |> Array.mapi (fun i fld ->
                     let reader o = readFld (reader o) i
                     let typ = fld.PropertyType
-                    let name = prefix + sep + fld.Name
+                    let name = prefix + sep + c.Name + sep + fld.Name
                     match Map.tryFind name virtualDbFields with
                     | Some project -> (fun _ _ _ -> ()), project prefix
                     | None ->

@@ -64,7 +64,7 @@ module T1 =
             lens, Parameter.String("p1"))
 
     let changeBar = 
-        Query.Create("update foo set thing$a$bar = :p1 where id = :p2", 
+        Query.Create("update foo set thing$a$item$bar = :p1 where id = :p2", 
             Lens.NonQuery, Parameter.String("p1"), Parameter.Int64("p2"))
 
 module T2 =
@@ -138,6 +138,7 @@ let setupasync () = async {
     let! db = Async.Db.Connect(FLenser.SQLite.Provider.create cs)
     let! _ = db.NonQuery(T1.init, ())
     let! _ = db.NonQuery(T2.init, ())
+    let! _ = db.NonQuery(T3.init, ())
     do! db.Transaction (fun db -> async {
             do! db.Insert("foo", T1.lens, T1.items) 
             do! db.Insert("bar", T2.lens, T2.items)
@@ -148,6 +149,7 @@ let setup () =
     let db = Db.Connect(FLenser.SQLite.Provider.create cs)
     db.NonQuery(T1.init, ()) |> ignore
     db.NonQuery(T2.init, ()) |> ignore
+    db.NonQuery(T3.init, ()) |> ignore
     db.Transaction(fun db -> 
         db.Insert("foo", T1.lens, T1.items)
         db.Insert("bar", T2.lens, T2.items)
