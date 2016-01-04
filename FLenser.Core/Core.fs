@@ -27,7 +27,7 @@ open System.Reflection
 
 exception UnexpectedNull
 
-type virtualRecordField<'A> = 'A -> obj
+type virtualTypeField<'A> = 'A -> obj
 type virtualDbField = String -> DbDataReader -> obj
 
 type internal rawLens = 
@@ -121,14 +121,14 @@ type CreateSubLensAttribute() = inherit Attribute()
 type Lens =
     static member NonQuery with get() = NonQueryLens
     static member Create<'A>(?virtualDbFields: Map<String, virtualDbField>,
-                             ?virtualRecordFields: Map<String, virtualRecordField<'A>>,
+                             ?virtualTypeFields: Map<String, virtualTypeField<'A>>,
                              ?prefix, ?nestingSeparator) : lens<'A> =
         let prefix = defaultArg prefix ""
         let sep = defaultArg nestingSeparator "$"
         let virtualDbFields = 
             defaultArg virtualDbFields Map.empty
             |> Map.fold (fun m k v -> Map.add (prefix + k) v m) Map.empty
-        let virtualRecordFields = defaultArg virtualRecordFields Map.empty
+        let virtualTypeFields = defaultArg virtualTypeFields Map.empty
         let typ = typeof<'A>
         let jsonSer = FsPickler.CreateJsonSerializer(indent = false, omitHeader = true)
         let columns = List<_>(capacity = 10)
@@ -137,7 +137,7 @@ type Lens =
             columns.Add name
             id
         let vdf = 
-            virtualRecordFields 
+            virtualTypeFields 
             |> Map.map (fun k v -> createColumnSlot (prefix + k), v)
         let prim (inject: obj -> obj) 
             (project: DbDataReader -> String -> obj)
@@ -369,7 +369,7 @@ type Lens =
                 readFldFromPrecomputed (FSharpValue.PreComputeTupleReader typ)
             let injectProject = flds |> Array.mapi (fun i typ ->
                 let reader o = readFld (reader o) i
-                let name = prefix + "Item" + i.ToString()
+                let name = prefix + "Item" + (i + 1).ToString()
                 match Map.tryFind (prefix + name) virtualDbFields with
                 | Some project -> (fun _ _ _ -> ()), project prefix
                 | None ->

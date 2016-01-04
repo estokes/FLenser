@@ -32,21 +32,25 @@ open System
 open System.Collections.Generic
 open System.Data.Common
 
-// A virtual record field is a field in the database that is derived from
-// a function on the underlying record, it need not exist in the record.
-type virtualRecordField<'A> = 'A -> obj
+(* A virtual type field is a field in the database that is derived from
+   a function on the F# type. *)
+type virtualTypeField<'A> = 'A -> obj
 
-(* a virtual db field is a field that exists in the record but 
-   is derived from other fields in the database. The passed in
-   string is the prefix to the field name in the current record,
-   it is only meaningful in the context of nested records. *) 
+(* a virtual db field is an F# type field that is derived from a function
+   on the columns of the database. The first argument is the nesting prefix of
+   the type, should you need that. By default nothing will be done with the field
+   when the type is inserted into the database, if you want to do something with it
+   then also make a virtual type field. *)
 type virtualDbField = String -> DbDataReader -> obj
 
-(* A Lens bidirectionally maps a F# record type to a database row type. Lenses only work on
-   F# record types, however those record types may contain other records, variants, arrays, and
-   other types (more complex ones via json serialization)
-    
-   Translation begins with primitive mappings (defined by the provider) e.g.
+(* A Lens bidirectionally maps an F# algebraic data type to a database row type. Lenses only work on
+   F# algebraic types (records, unions, and tuples), however if those types contain some other object
+   type then it will be pickled to JSON using FsPickler (because many databases support operations on 
+   JSON documents).
+
+   Translation begins with primitive type mappings. Each provider has it's own type mappings, for 
+   example here are the ones for PostgreSQL.
+
    .net     <==> PostgreSQL
    Boolean  <==>       bool
    Double   <==>     double
@@ -57,42 +61,54 @@ type virtualDbField = String -> DbDataReader -> obj
    int      <==>        int
    int64    <==>        int
 
-   F# record fields map to database column names, which are prefixed with the string in the 
-   prefix argument, if specified. Database table names are not significant to the translation,
-   which is purely structural. The database schema isn't altered in any way, the user must manually
-   ensure that the schema matches, else the translation will fail at run time. All fields of the record
-   must appear in the database, however all columns of the database need not appear in the record. Columns
-   with no corresponding record field will be ignored. This property is intentional, and very useful for
-   extending the database schema without disturbing existing applications. 
+   F# type fields map to database column names, which are prefixed with the string in the 
+   prefix argument, if specified. Database table names are not significant to the translation. 
+   The database schema isn't altered (or read) in any way, the user must manually ensure that the 
+   schema is compatible. All fields of the type must appear in the database,  however all columns 
+   of the database need not appear in the type. Columns with no corresponding type field will be 
+   ignored.  
 
-   Examples
+   Examples (note $ is the default nesting separator, but you can change it)
 
-   type t = {x: int; y: String} <==> create table _ (x int, y text)
-   type u = {name: String; data: t} <==> create table _ (name text, data$x int, data$y text)
-   type kind = Simple of t | Complex of u
-   type v = {id: int; it: kind} <==> create table _ (id int, it int, it$complex$name text, 
-                                                     it$complex$data$x int, it$complex$data$y text, 
-                                                     it$simple$x int, it$simple$y int)
-  
-   The option type is handled specially using SQL null
-   type x = {foo: Option<String>} <==> create table _ (foo text)
-   if column foo is null for a specific row then {foo = None} will be
-   generated. If {foo = None} is inserted, then column foo will be set
-   to null. This doesn't apply to sub records, which need a field to
-   identify whether they are Some or None.
-  
-   Sub records can be optional, Variants may not
-   type y = {foo: Option<t>} <==> create table _ (foo$x int, foo$y text)
-   If all columns of an optional sub record are null, then it is None,
-   otherwise it is Some
-  
-   Depending on the database provider Arrays of primitives may be represented as database arrays
-   type a = {name: String; items:String[]} <==> create table _ (name text, items text[])
+   type t = {x: int; y: String}     <==> create table _ (x int, 
+                                                         y text)
 
-   Any type that isn't a primitive, subrecord, optional subrecord, variant
-   with only nothing or records as args, or an array will be serialized to JSON. E.G.
-   type b = {name: String; items: list<String * String>} <==> create table _ (name text, items jsonb)
-*)
+   type u = {name: String; data: t} <==> create table _ (name text,
+                                                         data$x int,
+                                                         data$y text)
+
+   type kind = 
+      | Simple of tag:String * t 
+      | Complex of u                <==> create table _ (kind int,
+                                                         kind$Simple$tag text,
+                                                         kind$Simple$Item2$x int, 
+                                                         kind$Simple$Item2$y text, 
+                                                         kind$Complex$Item$name text,
+                                                         kind$Complex$Item$data$x int,
+                                                         kind$Complex$Item$data$y text)
+
+   type v = {id: int; it: kind}     <==> create table _ (id int, 
+                                                         it int, 
+                                                         it$Simple$tag text,
+                                                         it$Simple$Item2$x int, 
+                                                         it$Simple$Item2$y text, 
+                                                         it$Complex$Item$name text,
+                                                         it$Complex$Item$data$x int,
+                                                         it$Complex$Item$data$y text)
+    
+    type tuple = v * t              <==> create table _ (Item1$id int,
+                                                         Item1$it int, 
+                                                         Item1$it$Simple$tag text,
+                                                         Item1$it$Simple$Item2$x int, 
+                                                         Item1$it$Simple$Item2$y text, 
+                                                         Item1$it$Complex$Item$name text,
+                                                         Item1$it$Complex$Item$data$x int,
+                                                         Item1$it$Complex$Item$data$y text,
+                                                         Item2$x int,
+                                                         Item2$y text)
+  
+   The None case of the option type is encoded as SQL null when the Some case
+   is a primitive type. Otherwise it is treated like any other union type. *)
 [<Class>]
 type lens<'A> =
     member Guid : Guid with get
@@ -122,8 +138,8 @@ type CreateSubLensAttribute =
 type Lens =
     // Create a lens for type A
     static member Create : ?virtualDbFields:Map<String,virtualDbField> 
-        * ?virtualRecordFields:Map<String,virtualRecordField<'A>> 
-        * ?prefix:string -> lens<'A>
+        * ?virtualTypeFields:Map<String,virtualTypeField<'A>> 
+        * ?prefix:String * ?nestingSeparator:String -> lens<'A>
     // A special lens that reads nothing, used for side effecting queries
     static member NonQuery: lens<NonQuery> with get
     // Given an A Lens, produce an optional A Lens. When reading, if all columns of
