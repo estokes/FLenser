@@ -329,15 +329,15 @@ type Lens =
                 match Map.tryFind name virtualDbFields with
                 | Some project -> (fun _ _ _ -> ()), project prefix
                 | None ->
-                    if not (isRecursive typ) && (isRecord typ || isTuple typ) then 
-                        subLens typ reader (name + sep)
-                    elif not (isRecursive typ) && isUnion typ then 
-                        subLens typ reader name
-                    elif primOrPrimArray typ then
+                    if primOrPrimArray typ then
                         prim reader primitives.[typ] name false
                     elif primOption typ then
                         primOpt reader primitives.[typ.GenericTypeArguments.[0]]
                             fld.PropertyType name
+                    elif not (isRecursive typ) && (isRecord typ || isTuple typ) then 
+                        subLens typ reader (name + sep)
+                    elif not (isRecursive typ) && isUnion typ then 
+                        subLens typ reader name
                     else json typ reader name)
             let construct = FSharpValue.PreComputeRecordConstructor(typ, true)
             let inject cols startidx record = 
@@ -362,15 +362,15 @@ type Lens =
                     match Map.tryFind name virtualDbFields with
                     | Some project -> (fun _ _ _ -> ()), project prefix
                     | None ->
-                        if not (isRecursive typ) && (isRecord typ || isTuple typ) then 
-                            subLens typ reader (name + sep)
-                        elif not (isRecursive typ) && isUnion typ then 
-                            subLens typ reader name
-                        elif primOrPrimArray typ then
+                        if primOrPrimArray typ then
                             prim reader primitives.[typ] name false
                         elif primOption typ then
                             primOpt reader primitives.[typ.GenericTypeArguments.[0]] 
                                 fld.PropertyType name
+                        elif not (isRecursive typ) && (isRecord typ || isTuple typ) then 
+                            subLens typ reader (name + sep)
+                        elif not (isRecursive typ) && isUnion typ then 
+                            subLens typ reader name
                         else json typ reader name)
                 let inject cols sidx case =
                     injectAndProject |> Array.iter (fun (inj, _) -> inj cols sidx case)
@@ -402,15 +402,15 @@ type Lens =
                 match Map.tryFind (prefix + name) virtualDbFields with
                 | Some project -> (fun _ _ _ -> ()), project prefix
                 | None ->
-                    if not (isRecursive typ) && (isRecord typ || isTuple typ) then
-                        subLens typ reader (name + sep)
-                    elif not (isRecursive typ) && isUnion typ then 
-                        subLens typ reader name
-                    elif primOrPrimArray typ then
+                    if primOrPrimArray typ then
                         prim reader primitives.[typ] name false
                     elif primOption typ then
                         primOpt reader primitives.[typ.GenericTypeArguments.[0]]
                             typ name
+                    elif not (isRecursive typ) && (isRecord typ || isTuple typ) then
+                        subLens typ reader (name + sep)
+                    elif not (isRecursive typ) && isUnion typ then 
+                        subLens typ reader name
                     else json typ reader name)
             let construct = FSharpValue.PreComputeTupleConstructor typ
             let inject (cols: obj[]) (startidx: int) (v: obj) =
