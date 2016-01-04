@@ -122,8 +122,9 @@ type Lens =
     static member NonQuery with get() = NonQueryLens
     static member Create<'A>(?virtualDbFields: Map<String, virtualDbField>,
                              ?virtualRecordFields: Map<String, virtualRecordField<'A>>,
-                             ?prefix) : lens<'A> =
+                             ?prefix, ?nestingSeparator) : lens<'A> =
         let prefix = defaultArg prefix ""
+        let sep = defaultArg nestingSeparator "$"
         let virtualDbFields = 
             defaultArg virtualDbFields Map.empty
             |> Map.fold (fun m k v -> Map.add (prefix + k) v m) Map.empty
@@ -250,7 +251,17 @@ type Lens =
             && (primOrPrimArray typ.GenericTypeArguments.[0])
         let isRecord t = FSharpType.IsRecord(t, true)
         let isUnion t = FSharpType.IsUnion(t, true)
-        let isTuple t = FSharpType.IsTuple(t, true)
+        let isTuple t = FSharpType.IsTuple(t)
+        let readFldFromPrecomputed (r: obj -> obj[]) =
+            let mutable the = obj()
+            let mutable cached = [||]
+            (fun (o: obj) i -> 
+                if LanguagePrimitives.PhysicalEquality o the then cached.[i]
+                else
+                    the <- o
+                    cached <- r o
+                    cached.[i]),
+            (fun () -> the <- obj(); cached <- [||])
         let rec subLens (typ: Type) reader prefix =
             typ.GetMethods() 
             |> Seq.filter (fun mi -> 
@@ -284,28 +295,24 @@ type Lens =
                                       %A" mi)
                 | _ -> failwith (sprintf "multiple CreateSubLens in %A" typ)
         and record (typ: Type) reader prefix =
-            let fields = 
-                FSharpType.GetRecordFields
-                    (typ, allowAccessToPrivateRepresentation = true)
+            let fields = FSharpType.GetRecordFields(typ, true)
             let injectAndProject = fields |> Array.map (fun fld ->
-                let reader (o : obj) = 
-                    FSharpValue.PreComputeRecordFieldReader fld (reader o)
-                let name = fld.Name
-                match Map.tryFind (prefix + name) virtualDbFields with
+                let readFld = FSharpValue.PreComputeRecordFieldReader fld
+                let reader o = readFld (reader o)
+                let name = prefix + fld.Name
+                let typ = fld.PropertyType
+                match Map.tryFind name virtualDbFields with
                 | Some project -> (fun _ _ _ -> ()), project prefix
                 | None ->
-                    let typ = fld.PropertyType
-                    if isRecord typ || isUnion typ then
-                        subLens typ reader (prefix + fld.Name + "$")
+                    if isRecord typ then subLens typ reader (name + sep)
+                    elif isUnion typ then subLens typ reader name
                     elif primOrPrimArray typ then
-                        prim reader primitives.[typ.GUID] (prefix + fld.Name) false
+                        prim reader primitives.[typ.GUID] name false
                     elif primOption typ then
                         primOpt reader primitives.[typ.GenericTypeArguments.[0].GUID]
-                            fld.PropertyType (prefix + fld.Name)
-                    else json typ reader (prefix + fld.Name))
-            let construct = 
-                FSharpValue.PreComputeRecordConstructor
-                    (typ, allowAccessToPrivateRepresentation = true)
+                            fld.PropertyType name
+                    else json typ reader name)
+            let construct = FSharpValue.PreComputeRecordConstructor(typ, true)
             let inject cols startidx record = 
                 injectAndProject |> Array.iter (fun (inj, _) -> inj cols startidx record)
             let project r =
@@ -315,24 +322,27 @@ type Lens =
         and union (typ: Type) reader prefix =
             let prefix = if prefix = "" then typ.Name else prefix
             let colid = createColumnSlot prefix
-            let tag = FSharpValue.PreComputeUnionTagReader(typ)
+            let tag = FSharpValue.PreComputeUnionTagReader(typ, true)
+            let mutable clearPrecomputedCache = []
             let case (c: UnionCaseInfo) =
-                let readFlds = FSharpValue.PreComputeUnionReader(c, true)
-                let flds = c.GetFields()
-                let injectAndProject = flds |> Seq.mapi (fun i fld ->
-                    let reader o = (readFlds (reader o)).[i]
+                let (readFld, clearCache) = 
+                    readFldFromPrecomputed (FSharpValue.PreComputeUnionReader(c, true))
+                clearPrecomputedCache <- clearCache :: clearPrecomputedCache
+                let injectAndProject = c.GetFields() |> Array.mapi (fun i fld ->
+                    let reader o = readFld (reader o) i
                     let typ = fld.PropertyType
-                    match Map.tryFind (prefix + fld.Name) virtualDbFields with
+                    let name = prefix + sep + fld.Name
+                    match Map.tryFind name virtualDbFields with
                     | Some project -> (fun _ _ _ -> ()), project prefix
                     | None ->
-                        if isRecord typ || isUnion typ then
-                            subLens typ reader (prefix + fld.Name + "$")
-                        elif primOrPrimArray then
-                            prim reader primitives.[typ.GUID] (prefix + fld.Name) false
+                        if isRecord typ then subLens typ reader (name + sep)
+                        elif isUnion typ then subLens typ reader name
+                        elif primOrPrimArray typ then
+                            prim reader primitives.[typ.GUID] name false
                         elif primOption typ then
-                            primOpt reader primitives.[typ.GenericTypeArguments.[0]] 
-                                fld.PropertyType (prefix + fld.Name)
-                        else json typ reader (prefix + fld.Name))
+                            primOpt reader primitives.[typ.GenericTypeArguments.[0].GUID] 
+                                fld.PropertyType name
+                        else json typ reader name)
                 let inject cols sidx case =
                     injectAndProject |> Array.iter (fun (inj, _) -> inj cols sidx case)
                 let project c = injectAndProject |> Array.map (fun (_, proj) -> proj c)
@@ -347,38 +357,42 @@ type Lens =
                 cols.[startidx + colid] <- box tag
                 let (_mk, (inj, _)) = mk.[tag]
                 inj cols startidx v
+                clearPrecomputedCache |> List.iter (fun f -> f ())
             let project (r: DbDataReader) =
-                let i = objToInt32 (r.GetValue(ord r name))
+                let i = objToInt32 (r.GetValue(ord r prefix))
                 let (mk, (_, proj)) = mk.[i]
                 mk (proj r)
             (inject, project)
         and tuple (typ: Type) reader prefix =
             let flds = FSharpType.GetTupleElements typ
-            let readFlds = FSharpValue.PreComputeTupleReader typ
+            let (readFld, clearCache) = 
+                readFldFromPrecomputed (FSharpValue.PreComputeTupleReader typ)
             let injectProject = flds |> Array.mapi (fun i typ ->
-                let reader o = (readFlds o).[i] // fix this
-                let name = "Item" + i.ToString()
+                let reader o = readFld (reader o) i
+                let name = prefix + "Item" + i.ToString()
                 match Map.tryFind (prefix + name) virtualDbFields with
                 | Some project -> (fun _ _ _ -> ()), project prefix
                 | None ->
-                    if isRecord typ || isUnion typ then
-                        subLens typ reader (prefix + name + "$")
+                    if isRecord typ then subLens typ reader (name + sep)
+                    elif isUnion typ then subLens typ reader name
                     elif primOrPrimArray typ then
-                        prim reader primitives.[typ.GUID] (prefix + name) false
+                        prim reader primitives.[typ.GUID] name false
                     elif primOption typ then
-                        primOpt reader primitives.[typ.GenericTypeArguments.[0]]
-                            typ (prefix + name)
-                    else json typ reader (prefix + name))
+                        primOpt reader primitives.[typ.GenericTypeArguments.[0].GUID]
+                            typ name
+                    else json typ reader name)
             let construct = FSharpValue.PreComputeTupleConstructor typ
             let inject (cols: obj[]) (startidx: int) (v: obj) =
-                injectAndProject |> Array.iter (fun (inj, _) -> inj cols startidx v)
+                injectProject |> Array.iter (fun (inj, _) -> inj cols startidx v)
+                clearCache ()
             let project r =
-                let a = injectAndProject |> Array.map (fun (_, proj) -> proj r)
+                let a = injectProject |> Array.map (fun (_, proj) -> proj r)
                 construct a
             (inject, project)
         and createInjectProject (typ: Type) (reader: obj -> obj) prefix =
             if isRecord typ then record typ reader prefix
             elif isUnion typ then union typ reader prefix
+            elif isTuple typ then tuple typ reader prefix
             else failwith "the root type must be a record, union, or tuple type"
         let (inject, project) = createInjectProject typ id prefix
         lens<'A>(columns.ToArray(),
