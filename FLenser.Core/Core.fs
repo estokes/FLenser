@@ -138,7 +138,120 @@ type Lens =
         let vdf = 
             virtualRecordFields 
             |> Map.map (fun k v -> createColumnSlot (prefix + k), v)
-        let rec subRecord (typ: Type) reader prefix =
+        let prim (inject: obj -> obj) 
+            (project: DbDataReader -> String -> obj)
+            (name: String) (nullok: bool) =
+            let colid = createColumnSlot name
+            let inject (a: obj[]) startidx (record : obj) : unit = 
+                a.[colid + startidx] <- inject record
+            let project (r: DbDataReader) : obj = 
+                let o = project r name
+                match o with
+                | null when not nullok -> raise UnexpectedNull
+                | o -> o
+            (inject, project)
+        let primOpt (reader : obj -> obj)
+            (project : DbDataReader -> String -> obj) (typ: Type)
+            (name: String) =
+            let ucases = FSharpType.GetUnionCases(typ)
+            let none = ucases |> Array.find (fun c -> c.Name = "None")
+            let some = ucases |> Array.find (fun c -> c.Name = "Some")
+            let get = FSharpValue.PreComputeUnionReader(some)
+            let get (o : obj) = (get o).[0]
+            let tag = FSharpValue.PreComputeUnionTagReader(typ)
+            let mkNone = FSharpValue.PreComputeUnionConstructor none
+            let mkSome = FSharpValue.PreComputeUnionConstructor some
+            let rtyp = typ.GenericTypeArguments.[0]
+            let inject v =
+               let o = reader v
+               let tag = tag o
+               if tag = none.Tag then null
+               else if tag = some.Tag then get o
+               else failwith "bug"
+            let project (r: DbDataReader) name : obj =
+                if r.IsDBNull(ord r name) then mkNone [||]
+                else 
+                    let o = project r name
+                    mkSome [|o|]
+            prim inject project name true
+        let getp (r: DbDataReader) name f = f (ord r name)
+        let objToInt32 (o: obj) =
+            match o with
+            | :? int32 as x -> x
+            | :? byte as x -> int32 x
+            | :? sbyte as x -> int32 x
+            | :? uint16 as x -> int32 x
+            | :? int16 as x -> int32 x
+            | :? uint32 as x -> int32 x
+            | :? uint64 as x -> int32 x
+            | :? int64 as x -> int32 x
+            | o -> failwith (sprintf "cannot convert %A to int32" o)
+        let primitives = 
+            let std r n = getp r n r.GetValue
+            [ typeof<Boolean>.GUID, 
+                (fun r n -> getp r n (fun i ->
+                    match r.GetValue i with
+                    | :? bool as x -> x
+                    | :? byte as x -> x > 0uy
+                    | :? int16 as x -> x > 0s
+                    | :? int32 as x -> x > 0
+                    | :? int64 as x -> x > 0L
+                    | o -> failwith (sprintf "can't cast %A to boolean" o)
+                    |> box))
+              typeof<Double>.GUID, std
+              typeof<String>.GUID, std
+              typeof<array<_>>.GUID, std
+              typeof<DateTime>.GUID, 
+                (fun r n -> getp r n (fun i ->
+                    match r.GetValue i with
+                    | :? DateTime as x -> x
+                    | :? String as x -> DateTime.Parse x
+                    | o -> failwith (sprintf "can't cast %A to DateTime" o)
+                    |> box))
+              typeof<TimeSpan>.GUID, 
+                (fun r n -> getp r n (fun i ->
+                    match r.GetValue i with
+                    | :? TimeSpan as x -> x
+                    | :? String as x -> TimeSpan.Parse x
+                    | o -> failwith (sprintf "can't cast %A to TimeSpan" o)
+                    |> box))
+              typeof<byte[]>.GUID, std
+              typeof<int>.GUID, 
+                (fun r n -> getp r n (fun i ->
+                    box (objToInt32 (r.GetValue i))))
+              typeof<int64>.GUID, 
+                (fun r n -> getp r n (fun i ->
+                    match r.GetValue i with
+                    | :? int64 as x -> x
+                    | :? byte as x -> int64 x
+                    | :? int16 as x -> int64 x
+                    | :? int32 as x -> int64 x
+                    | o -> failwith (sprintf "cannot convert %A to int64" o)
+                    |> box)) ]
+            |> Map.ofList
+        let json (typ: Type) reader name =
+            let pk = FsPickler.GeneratePickler(typ)
+            let e = System.Text.Encoding.UTF8
+            prim 
+                (fun v -> box (e.GetString (jsonSer.PickleUntyped(reader v, pk))))
+                (fun r n -> 
+                    let s = r.GetString(ord r n)
+                    jsonSer.UnPickleUntyped(e.GetBytes s, pk, encoding = e))
+                name false
+        let primOrPrimArray (typ: Type) =
+            Map.containsKey typ.GUID primitives 
+            && (not typ.IsArray 
+                || (typ.HasElementType
+                    && (let elt = typ.GetElementType() 
+                        Map.containsKey elt.GUID primitives
+                        && not elt.IsArray)))
+        let primOption (typ: Type) =
+            typ.GUID = typeof<Option<_>>.GUID 
+            && (primOrPrimArray typ.GenericTypeArguments.[0])
+        let isRecord t = FSharpType.IsRecord(t, true)
+        let isUnion t = FSharpType.IsUnion(t, true)
+        let isTuple t = FSharpType.IsTuple(t, true)
+        let rec subLens (typ: Type) reader prefix =
             typ.GetMethods() 
             |> Seq.filter (fun mi -> 
                 mi.CustomAttributes 
@@ -170,181 +283,26 @@ type Lens =
                                       static member _: ?prefix:String -> lens<'A>
                                       %A" mi)
                 | _ -> failwith (sprintf "multiple CreateSubLens in %A" typ)
-        and createInjectProject (typ: Type) (reader: obj -> obj) prefix =
-            let option (typ : Type) f =
-                let ucases = FSharpType.GetUnionCases(typ)
-                let none = ucases |> Array.find (fun c -> c.Name = "None")
-                let some = ucases |> Array.find (fun c -> c.Name = "Some")
-                let get = FSharpValue.PreComputeUnionReader(some)
-                let get (o : obj) = (get o).[0]
-                let tag = FSharpValue.PreComputeUnionTagReader(typ)
-                let mkNone = FSharpValue.PreComputeUnionConstructor none
-                let mkSome = FSharpValue.PreComputeUnionConstructor some
-                let rtyp = typ.GenericTypeArguments.[0]
-                f none some get tag mkNone mkSome rtyp
-            let prim (inject: obj -> obj) 
-                (project: DbDataReader -> String -> obj)
-                (fld : Reflection.PropertyInfo)
-                (nullok: bool) =
-                let name = prefix + fld.Name
-                let colid = createColumnSlot name
-                let inject (a: obj[]) startidx (record : obj) : unit = 
-                    a.[colid + startidx] <- inject record
-                let project (r: DbDataReader) : obj = 
-                    let o = project r name
-                    match o with
-                    | null when not nullok -> raise UnexpectedNull
-                    | o -> o
-                (inject, project)
-            let primOpt (reader : obj -> obj) 
-                (inject: obj -> obj)
-                (project : DbDataReader -> String -> obj) 
-                (fld : Reflection.PropertyInfo) =
-                option fld.PropertyType (fun none some get tag mkNone mkSome _ ->
-                    let inject v =
-                        let o = reader v
-                        let tag = tag o
-                        if tag = none.Tag then null
-                        else if tag = some.Tag then get o
-                        else failwith "bug"
-                    let project (r: DbDataReader) name : obj =
-                        if r.IsDBNull(ord r name) then mkNone [||]
-                        else 
-                            let o = project r name
-                            mkSome [|o|]
-                    prim inject project fld true)
-            let getp (r: DbDataReader) name f = f (ord r name)
-            let primitives = 
-                let std r n = getp r n r.GetValue
-                [ typeof<Boolean>.GUID, 
-                    (fun r n -> getp r n (fun i ->
-                        match r.GetValue i with
-                        | :? bool as x -> x
-                        | :? byte as x -> x > 0uy
-                        | :? int16 as x -> x > 0s
-                        | :? int32 as x -> x > 0
-                        | :? int64 as x -> x > 0L
-                        | o -> failwith (sprintf "can't cast %A to boolean" o)
-                        |> box))
-                  typeof<Double>.GUID, std
-                  typeof<String>.GUID, std
-                  typeof<DateTime>.GUID, 
-                    (fun r n -> getp r n (fun i ->
-                        match r.GetValue i with
-                        | :? DateTime as x -> x
-                        | :? String as x -> DateTime.Parse x
-                        | o -> failwith (sprintf "can't cast %A to DateTime" o)
-                        |> box))
-                  typeof<TimeSpan>.GUID, 
-                    (fun r n -> getp r n (fun i ->
-                        match r.GetValue i with
-                        | :? TimeSpan as x -> x
-                        | :? String as x -> TimeSpan.Parse x
-                        | o -> failwith (sprintf "can't cast %A to TimeSpan" o)
-                        |> box))
-                  typeof<byte[]>.GUID, std
-                  typeof<int>.GUID, 
-                    (fun r n -> getp r n (fun i ->
-                        match r.GetValue i with
-                        | :? int32 as x -> x
-                        | :? byte as x -> int32 x
-                        | :? int16 as x -> int32 x
-                        | :? int64 as x -> int32 x
-                        | o -> failwith (sprintf "cannot convert %A to int32" o)
-                        |> box))
-                  typeof<int64>.GUID, 
-                    (fun r n -> getp r n (fun i ->
-                        match r.GetValue i with
-                        | :? int64 as x -> x
-                        | :? byte as x -> int64 x
-                        | :? int16 as x -> int64 x
-                        | :? int32 as x -> int64 x
-                        | o -> failwith (sprintf "cannot convert %A to int64" o)
-                        |> box)) ]
-                |> Map.ofList
+        and record (typ: Type) reader prefix =
             let fields = 
                 FSharpType.GetRecordFields
                     (typ, allowAccessToPrivateRepresentation = true)
-            let injectAndProject = fields |> Array.map (fun fld -> 
+            let injectAndProject = fields |> Array.map (fun fld ->
                 let reader (o : obj) = 
                     FSharpValue.PreComputeRecordFieldReader fld (reader o)
                 let name = fld.Name
                 match Map.tryFind (prefix + name) virtualDbFields with
                 | Some project -> (fun _ _ _ -> ()), project prefix
                 | None ->
-                    match fld.PropertyType with
-                    | typ when FSharpType.IsRecord(typ) ->
-                        subRecord typ reader (prefix + fld.Name + "$")
-                    | typ when Map.containsKey typ.GUID primitives ->
-                        prim reader primitives.[typ.GUID] fld false
-                    | typ when typ.GUID = typeof<Option<_>>.GUID 
-                               && Map.containsKey typ.GenericTypeArguments.[0].GUID 
-                                    primitives ->
-                        primOpt reader id 
-                            primitives.[typ.GenericTypeArguments.[0].GUID] fld
-                    | typ when typ.IsArray && typ.HasElementType
-                               && Map.containsKey (typ.GetElementType()).GUID primitives ->
-                        prim reader (fun r n -> getp r n r.GetValue) fld false
-                    | typ when typ.GUID = typeof<Option<_>>.GUID
-                               && let ityp = typ.GenericTypeArguments.[0]
-                                  ityp.IsArray && ityp.HasElementType
-                                  && Map.containsKey (ityp.GetElementType()).GUID primitives ->
-                        primOpt reader id (fun r n -> getp r n r.GetValue) fld
-                    | typ when FSharpType.IsUnion(typ, true)
-                               && typ.GenericTypeArguments = [||]
-                               && (FSharpType.GetUnionCases(typ)
-                                  |> Array.forall (fun c ->
-                                       match c.GetFields () with
-                                       | [||] -> true
-                                       | [|ifo|] -> FSharpType.IsRecord(ifo.PropertyType)
-                                       | _ -> false)) ->
-                        let name = prefix + fld.Name
-                        let colid = createColumnSlot name
-                        let tag = FSharpValue.PreComputeUnionTagReader(typ)
-                        let mutable subrecprefixes = []
-                        let subRecord (c: UnionCaseInfo) =
-                            match c.GetFields() with
-                            | [||] -> None
-                            | [|ifo|] ->
-                                let readFlds = FSharpValue.PreComputeUnionReader(c, true)
-                                let reader (o: obj) = (readFlds (reader o)).[0]
-                                let t = ifo.PropertyType
-                                let prefix = prefix + fld.Name + "$" + c.Name + "$"
-                                subrecprefixes <- prefix :: subrecprefixes
-                                Some (subRecord t reader prefix)
-                            | _ -> failwith "bug"
-                        let mk =
-                            let d = Dictionary<_,_>()
-                            FSharpType.GetUnionCases(typ) 
-                            |> Array.map (fun c ->
-                                c.Tag, (FSharpValue.PreComputeUnionConstructor(c),
-                                        subRecord c))
-                            |> Array.iter (fun (k, v) -> d.[k] <- v)
-                            d
-                        let inject (cols: obj[]) startidx v =
-                            let tag = tag (reader v)
-                            cols.[startidx + colid] <- box tag
-                            let (_mk, subrec) = mk.[tag]
-                            match subrec with
-                            | None -> ()
-                            | Some (inj, _proj) -> inj cols startidx v
-                        let project (r: DbDataReader) =
-                            let i = r.GetInt32(ord r name)
-                            let (mk, subrec) = mk.[i]
-                            match subrec with
-                            | None -> mk [||]
-                            | Some (_, proj) -> mk [|proj r|]
-                        (inject, project)
-                    | typ ->
-                        let pk = FsPickler.GeneratePickler(typ)
-                        let e = System.Text.Encoding.UTF8
-                        prim 
-                            (fun v -> 
-                                box (e.GetString (jsonSer.PickleUntyped(reader v, pk))))
-                            (fun r n -> 
-                                let s = r.GetString(ord r n)
-                                jsonSer.UnPickleUntyped(e.GetBytes s, pk, encoding = e))
-                            fld false)
+                    let typ = fld.PropertyType
+                    if isRecord typ || isUnion typ then
+                        subLens typ reader (prefix + fld.Name + "$")
+                    elif primOrPrimArray typ then
+                        prim reader primitives.[typ.GUID] (prefix + fld.Name) false
+                    elif primOption typ then
+                        primOpt reader primitives.[typ.GenericTypeArguments.[0].GUID]
+                            fld.PropertyType (prefix + fld.Name)
+                    else json typ reader (prefix + fld.Name))
             let construct = 
                 FSharpValue.PreComputeRecordConstructor
                     (typ, allowAccessToPrivateRepresentation = true)
@@ -354,6 +312,74 @@ type Lens =
                 let a = injectAndProject |> Array.map (fun (_, proj) -> proj r)
                 construct a
             (inject, project)
+        and union (typ: Type) reader prefix =
+            let prefix = if prefix = "" then typ.Name else prefix
+            let colid = createColumnSlot prefix
+            let tag = FSharpValue.PreComputeUnionTagReader(typ)
+            let case (c: UnionCaseInfo) =
+                let readFlds = FSharpValue.PreComputeUnionReader(c, true)
+                let flds = c.GetFields()
+                let injectAndProject = flds |> Seq.mapi (fun i fld ->
+                    let reader o = (readFlds (reader o)).[i]
+                    let typ = fld.PropertyType
+                    match Map.tryFind (prefix + fld.Name) virtualDbFields with
+                    | Some project -> (fun _ _ _ -> ()), project prefix
+                    | None ->
+                        if isRecord typ || isUnion typ then
+                            subLens typ reader (prefix + fld.Name + "$")
+                        elif primOrPrimArray then
+                            prim reader primitives.[typ.GUID] (prefix + fld.Name) false
+                        elif primOption typ then
+                            primOpt reader primitives.[typ.GenericTypeArguments.[0]] 
+                                fld.PropertyType (prefix + fld.Name)
+                        else json typ reader (prefix + fld.Name))
+                let inject cols sidx case =
+                    injectAndProject |> Array.iter (fun (inj, _) -> inj cols sidx case)
+                let project c = injectAndProject |> Array.map (fun (_, proj) -> proj c)
+                (inject, project)
+            let mk =
+                FSharpType.GetUnionCases(typ) 
+                |> Array.map (fun c -> 
+                    c.Tag, (FSharpValue.PreComputeUnionConstructor(c), case c))
+                |> dict
+            let inject (cols: obj[]) (startidx: int) (v: obj) =
+                let tag = tag (reader v)
+                cols.[startidx + colid] <- box tag
+                let (_mk, (inj, _)) = mk.[tag]
+                inj cols startidx v
+            let project (r: DbDataReader) =
+                let i = objToInt32 (r.GetValue(ord r name))
+                let (mk, (_, proj)) = mk.[i]
+                mk (proj r)
+            (inject, project)
+        and tuple (typ: Type) reader prefix =
+            let flds = FSharpType.GetTupleElements typ
+            let readFlds = FSharpValue.PreComputeTupleReader typ
+            let injectProject = flds |> Array.mapi (fun i typ ->
+                let reader o = (readFlds o).[i] // fix this
+                let name = "Item" + i.ToString()
+                match Map.tryFind (prefix + name) virtualDbFields with
+                | Some project -> (fun _ _ _ -> ()), project prefix
+                | None ->
+                    if isRecord typ || isUnion typ then
+                        subLens typ reader (prefix + name + "$")
+                    elif primOrPrimArray typ then
+                        prim reader primitives.[typ.GUID] (prefix + name) false
+                    elif primOption typ then
+                        primOpt reader primitives.[typ.GenericTypeArguments.[0]]
+                            typ (prefix + name)
+                    else json typ reader (prefix + name))
+            let construct = FSharpValue.PreComputeTupleConstructor typ
+            let inject (cols: obj[]) (startidx: int) (v: obj) =
+                injectAndProject |> Array.iter (fun (inj, _) -> inj cols startidx v)
+            let project r =
+                let a = injectAndProject |> Array.map (fun (_, proj) -> proj r)
+                construct a
+            (inject, project)
+        and createInjectProject (typ: Type) (reader: obj -> obj) prefix =
+            if isRecord typ then record typ reader prefix
+            elif isUnion typ then union typ reader prefix
+            else failwith "the root type must be a record, union, or tuple type"
         let (inject, project) = createInjectProject typ id prefix
         lens<'A>(columns.ToArray(),
             (fun cols startidx t -> 
