@@ -67,6 +67,8 @@ module T1 =
         Query.Create("update foo set thing$a$item$bar = :p1 where id = :p2", 
             Lens.NonQuery, Parameter.String("p1"), Parameter.Int64("p2"))
 
+    let all = Query.Create("select * from foo", lens)
+
 module T2 =
     type u = 
         {id: int64
@@ -176,24 +178,32 @@ let main argv =
         let cs = SQLiteConnectionStringBuilder("DataSource=:memory:")
         cs.JournalMode <- SQLiteJournalModeEnum.Off
         cs.CacheSize <- 0
+        let print x = x |> Seq.iter (printfn "%A")
         async {
             let! db = setupasync ()
             let! i1 = db.Query(T1.byItem, "foo")
+            print i1
             if i1.[0] <> List.head T1.items then failwith (sprintf "0: %A" i1.[0])
             let! _ = db.NonQuery(T1.changeBar, ("hello", 0L))
             let! i2 = db.Query(T1.byItem, "foo")
+            print i2
             if i2.[0] = List.head T1.items then failwith (sprintf "1: %A" i2.[0])
             if i2.[0] <> {(List.head T1.items) with 
                                 thing = T1.A {foo = 42; bar = "hello"; baz = None}}
             then failwith (sprintf "2: %A" i2.[0])
             let! i3 = db.Query(T2.byCat, "foofoo")
+            print i3
             if i3.[0] <> List.head T2.items then failwith (sprintf "2: %A" i3.[0])
             let! i4 = db.Query(T3.byTag, "Random Place")
+            print i4
             if i4.[0] <> List.head T3.items then failwith (sprintf "3: %A" i4.[0])
             let! i5 = db.Query(T3.everywhere, ())
+            print i5
             Seq.iter2 (fun db loc -> if db <> loc then failwith (sprintf "4: %A" db)) 
                 i5 T3.items
             let! i6 = db.Query(joined, ())
-            i6 |> Seq.iter (printfn "%A")
+            print i6
+            let! i7 = db.Query(T1.all, ())
+            print i7
         } |> Async.RunSynchronously
     0
