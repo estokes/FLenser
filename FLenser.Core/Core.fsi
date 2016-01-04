@@ -33,7 +33,8 @@ open System.Collections.Generic
 open System.Data.Common
 
 (* A virtual type field is a field in the database that is derived from
-   a function on the F# type. *)
+   a function on the F# type. A virtual type field will exist as a column
+   in the database, but need not exist in the type at all. *)
 type virtualTypeField<'A> = 'A -> obj
 
 (* a virtual db field is an F# type field that is derived from a function
