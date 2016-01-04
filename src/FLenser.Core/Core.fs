@@ -223,7 +223,7 @@ module Utils =
             elif isTuple t' then
                 FSharpType.GetTupleElements(t')
                 |> Array.exists (fun ptyp -> 
-                    ptyp = t || if ptyp = t' then false else loop t')
+                    ptyp = t || if ptyp = t' then false else loop ptyp)
             else false
         loop t
 
