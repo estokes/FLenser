@@ -30,6 +30,9 @@ exception UnexpectedNull
 type virtualTypeField<'A> = 'A -> obj
 type virtualDbField = String -> DbDataReader -> obj
 
+type json internal (data: String) =
+    member __.Data with get() = data
+
 type internal rawLens = 
     abstract member Columns: String[] with get
     abstract member InjectRaw: obj[] * int * obj -> unit
@@ -292,7 +295,7 @@ type Lens =
             let pk = FsPickler.GeneratePickler(typ)
             let e = System.Text.Encoding.UTF8
             prim 
-                (fun v -> box (e.GetString (jsonSer.PickleUntyped(reader v, pk))))
+                (fun v -> box (json(e.GetString (jsonSer.PickleUntyped(reader v, pk)))))
                 (fun r n -> 
                     let s = 
                         match r.GetValue(ord r n) with

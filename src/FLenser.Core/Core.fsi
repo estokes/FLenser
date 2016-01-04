@@ -242,6 +242,13 @@ type PreparedInsert =
     abstract member FinishAsync: unit -> Async<unit>
     abstract member RowAsync: obj[] -> Async<unit>
 
+// When a lens chooses to serialize something to Json, it will pass
+// this type to the database provider instead of the raw string
+// which is returned by Data. Some databases need to be told
+[<Class>]
+type json =
+    member Data: String with get
+
 // A provider is required to interface with an APO.NET implementation,
 // and should be easy to derive from such an implementation
 type Provider<'CON, 'PAR, 'TXN

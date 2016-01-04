@@ -90,6 +90,7 @@ let create (csb: NpgsqlConnectionStringBuilder) =
                         | :? String as x -> w.Write<String>(x, NpgsqlDbType.Text)
                         | :? TimeSpan as x -> w.Write<TimeSpan>(x, NpgsqlDbType.Interval)
                         | :? array<byte> as x -> w.Write<byte[]>(x, NpgsqlDbType.Bytea)
+                        | :? json as x -> w.Write(x.Data, NpgsqlDbType.Jsonb)
                         | x -> w.Write(x, NpgsqlDbType.Unknown)
                 
                 member p.RowAsync(o) = async {
