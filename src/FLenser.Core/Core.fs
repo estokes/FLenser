@@ -454,10 +454,19 @@ type Lens =
                 construct a
             (inject, project)
         and createInjectProject (typ: Type) (reader: obj -> obj) prefix =
-            if not (isRecursive typ) && isRecord typ then record typ reader prefix
+            let e = "to create a lens from a single column primitive (or serialized type) you must specify a prefix" 
+            if not (isRecursive typ) && isPrim typ then
+                if prefix = "" then failwith e
+                else prim reader primitives.[typ] prefix false
+            elif not (isRecursive typ) && isPrimOption typ then
+                if prefix = "" then failwith e
+                else primOpt reader primitives.[typ.GenericTypeArguments.[0]] typ prefix
+            elif not (isRecursive typ) && isRecord typ then record typ reader prefix
             elif not (isRecursive typ) && isUnion typ then union typ reader prefix
             elif not (isRecursive typ) && isTuple typ then tuple typ reader prefix
-            else failwith "the root type must be a non recursive record, union, or tuple type"
+            else 
+                if prefix = "" then failwith e
+                else json typ reader prefix
         let (inject, project) = createInjectProject typ id prefix
         lens<'A>(columns.ToArray(),
             (fun cols startidx t -> 

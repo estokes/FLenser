@@ -128,9 +128,13 @@ module T3 =
 
     let everywhere = Query.Create("select * from loc", lens)
 
+    let justNames = 
+        Query.Create("select item1 from loc", 
+            Lens.Create<String>(prefix = "item1"))
+
 let joined = 
-    Query.Create("select * from foo join bar on foo.id = bar.thing$id", 
-        Lens.Tuple(T1.lens, T2.lens))
+    Query.Create("select * from foo left outer join bar on foo.id = bar.thing$id", 
+        Lens.Tuple(T1.lens, Lens.Optional(T2.lens)))
 
 let cs = SQLiteConnectionStringBuilder("DataSource=:memory:")
 cs.JournalMode <- SQLiteJournalModeEnum.Off
@@ -205,5 +209,10 @@ let main argv =
             print i6
             let! i7 = db.Query(T1.all, ())
             print i7
+            let! i8 = db.Query(T3.justNames, ())
+            print i8
+            Seq.iter2 (fun name (name', _) -> 
+                if name <> name' then failwith (sprintf "5: %A" name))
+                i8 T3.items
         } |> Async.RunSynchronously
     0
