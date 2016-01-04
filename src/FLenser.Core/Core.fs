@@ -114,6 +114,119 @@ module Utils =
         let project (r: DbDataReader) = ignore r
         lens<NonQuery>([||], (fun _ _ _ -> ()), (fun _ -> NonQuery))
 
+    let getp (r: DbDataReader) name f = f (ord r name)
+    let objToInt32 (o: obj) =
+        match o with
+        | :? int32 as x -> x
+        | :? byte as x -> int32 x
+        | :? sbyte as x -> int32 x
+        | :? uint16 as x -> int32 x
+        | :? int16 as x -> int32 x
+        | :? uint32 as x -> int32 x
+        | :? uint64 as x -> int32 x
+        | :? int64 as x -> int32 x
+        | o -> failwith (sprintf "cannot convert %A to int32" o)
+    let primitives = 
+        let std r n = getp r n r.GetValue
+        [ typeof<bool>, 
+            (fun r n -> getp r n (fun i ->
+                match r.GetValue i with
+                | :? bool as x -> x
+                | :? byte as x -> x > 0uy
+                | :? int16 as x -> x > 0s
+                | :? int32 as x -> x > 0
+                | :? int64 as x -> x > 0L
+                | o -> failwith (sprintf "can't cast %A to boolean" o)
+                |> box))
+          typeof<float>, std
+          typeof<String>, std
+          typeof<array<byte>>, std
+          typeof<array<int16>>, std
+          typeof<array<int32>>, std
+          typeof<array<int64>>, std
+          typeof<array<float>>, std
+          typeof<array<bool>>, std
+          typeof<array<String>>, std
+          typeof<array<DateTime>>, std
+          typeof<array<TimeSpan>>, std
+          typeof<DateTime>, 
+            (fun r n -> getp r n (fun i ->
+                match r.GetValue i with
+                | :? DateTime as x -> x
+                | :? String as x -> DateTime.Parse x
+                | o -> failwith (sprintf "can't cast %A to DateTime" o)
+                |> box))
+          typeof<TimeSpan>, 
+            (fun r n -> getp r n (fun i ->
+                match r.GetValue i with
+                | :? TimeSpan as x -> x
+                | :? String as x -> TimeSpan.Parse x
+                | o -> failwith (sprintf "can't cast %A to TimeSpan" o)
+                |> box))
+          typeof<byte>,
+            (fun r n -> getp r n (fun i ->
+                match r.GetValue i with
+                | :? byte as x -> x
+                | :? int16 as x -> byte x
+                | :? int32 as x -> byte x
+                | :? int64 as x -> byte x
+                | o -> failwith (sprintf "cannot convert %A to byte" o)
+                |> box))
+          typeof<int16>,
+            (fun r n -> getp r n (fun i ->
+                match r.GetValue i with
+                | :? int16 as x -> x
+                | :? byte as x -> int16 x
+                | :? int32 as x -> int16 x
+                | :? int64 as x -> int16 x
+                | o -> failwith (sprintf "cannot convert %A to int16" o)
+                |> box))
+          typeof<int>, 
+            (fun r n -> getp r n (fun i ->
+                box (objToInt32 (r.GetValue i))))
+          typeof<int64>, 
+            (fun r n -> getp r n (fun i ->
+                match r.GetValue i with
+                | :? int64 as x -> x
+                | :? byte as x -> int64 x
+                | :? int16 as x -> int64 x
+                | :? int32 as x -> int64 x
+                | o -> failwith (sprintf "cannot convert %A to int64" o)
+                |> box)) ]
+        |> dict
+
+    let isPrim (typ: Type) = primitives.ContainsKey typ
+    let isPrimOption (typ: Type) =
+        typ.IsGenericType
+        && typ.GetGenericTypeDefinition() = typedefof<Option<_>> 
+        && (isPrim typ.GenericTypeArguments.[0])
+    let isRecord t = FSharpType.IsRecord(t, true)
+    let isUnion t = FSharpType.IsUnion(t, true)
+    let isTuple t = FSharpType.IsTuple(t)
+    let isRecursive (t: Type) =
+        let rec loop t' =
+            if isPrim t' || isPrimOption t' then false
+            elif isRecord t' then
+                FSharpType.GetRecordFields(t', true)
+                |> Array.exists (fun fld ->
+                    fld.PropertyType = t
+                    || if fld.PropertyType = t' then false
+                       else loop fld.PropertyType)
+            elif isUnion t' then
+                FSharpType.GetUnionCases(t', true)
+                |> Array.exists (fun c ->
+                    c.GetFields()
+                    |> Array.exists (fun fld ->
+                        fld.PropertyType = t
+                        || if fld.PropertyType = t' then false
+                           else loop fld.PropertyType))
+            elif isTuple t' then
+                FSharpType.GetTupleElements(t')
+                |> Array.exists (fun ptyp -> 
+                    ptyp = t || if ptyp = t' then false else loop t')
+            else false
+        loop t
+
 open Utils
 
 type CreateSubLensAttribute() = inherit Attribute()
@@ -175,106 +288,19 @@ type Lens =
                     let o = project r name
                     mkSome [|o|]
             prim inject project name true
-        let getp (r: DbDataReader) name f = f (ord r name)
-        let objToInt32 (o: obj) =
-            match o with
-            | :? int32 as x -> x
-            | :? byte as x -> int32 x
-            | :? sbyte as x -> int32 x
-            | :? uint16 as x -> int32 x
-            | :? int16 as x -> int32 x
-            | :? uint32 as x -> int32 x
-            | :? uint64 as x -> int32 x
-            | :? int64 as x -> int32 x
-            | o -> failwith (sprintf "cannot convert %A to int32" o)
-        let primitives = 
-            let std r n = getp r n r.GetValue
-            [ typeof<Boolean>, 
-                (fun r n -> getp r n (fun i ->
-                    match r.GetValue i with
-                    | :? bool as x -> x
-                    | :? byte as x -> x > 0uy
-                    | :? int16 as x -> x > 0s
-                    | :? int32 as x -> x > 0
-                    | :? int64 as x -> x > 0L
-                    | o -> failwith (sprintf "can't cast %A to boolean" o)
-                    |> box))
-              typeof<Double>, std
-              typeof<String>, std
-              typeof<array<_>>, std
-              typeof<DateTime>, 
-                (fun r n -> getp r n (fun i ->
-                    match r.GetValue i with
-                    | :? DateTime as x -> x
-                    | :? String as x -> DateTime.Parse x
-                    | o -> failwith (sprintf "can't cast %A to DateTime" o)
-                    |> box))
-              typeof<TimeSpan>, 
-                (fun r n -> getp r n (fun i ->
-                    match r.GetValue i with
-                    | :? TimeSpan as x -> x
-                    | :? String as x -> TimeSpan.Parse x
-                    | o -> failwith (sprintf "can't cast %A to TimeSpan" o)
-                    |> box))
-              typeof<byte[]>, std
-              typeof<int>, 
-                (fun r n -> getp r n (fun i ->
-                    box (objToInt32 (r.GetValue i))))
-              typeof<int64>, 
-                (fun r n -> getp r n (fun i ->
-                    match r.GetValue i with
-                    | :? int64 as x -> x
-                    | :? byte as x -> int64 x
-                    | :? int16 as x -> int64 x
-                    | :? int32 as x -> int64 x
-                    | o -> failwith (sprintf "cannot convert %A to int64" o)
-                    |> box)) ]
-            |> dict
         let json (typ: Type) reader name =
             let pk = FsPickler.GeneratePickler(typ)
             let e = System.Text.Encoding.UTF8
             prim 
                 (fun v -> box (e.GetString (jsonSer.PickleUntyped(reader v, pk))))
                 (fun r n -> 
-                    let s = r.GetString(ord r n)
-                    jsonSer.UnPickleUntyped(e.GetBytes s, pk, encoding = e))
+                    let s = 
+                        match r.GetValue(ord r n) with
+                        | :? array<byte> as x -> x
+                        | :? String as x -> e.GetBytes x
+                        | o -> failwith (sprintf "can't convert %A to byte[]" o)
+                    jsonSer.UnPickleUntyped(s, pk, encoding = e))
                 name false
-        let primOrPrimArray (typ: Type) =
-            primitives.ContainsKey typ
-            && (not typ.IsArray 
-                || (typ.HasElementType
-                    && (let elt = typ.GetElementType() 
-                        primitives.ContainsKey elt
-                        && not elt.IsArray)))
-        let primOption (typ: Type) =
-            typ.IsGenericType
-            && typ.GetGenericTypeDefinition() = typedefof<Option<_>> 
-            && (primOrPrimArray typ.GenericTypeArguments.[0])
-        let isRecord t = FSharpType.IsRecord(t, true)
-        let isUnion t = FSharpType.IsUnion(t, true)
-        let isTuple t = FSharpType.IsTuple(t)
-        let isRecursive (t: Type) =
-            let rec loop t' =
-                if isRecord t' then
-                    FSharpType.GetRecordFields(t', true)
-                    |> Array.exists (fun fld ->
-                        fld.PropertyType = t
-                        || if fld.PropertyType = t' then false
-                           else loop fld.PropertyType)
-                elif isUnion t' then
-                    FSharpType.GetUnionCases(t', true)
-                    |> Array.exists (fun c ->
-                        c.GetFields()
-                        |> Array.exists (fun fld ->
-                            fld.PropertyType = t
-                            || if fld.PropertyType = t' then false
-                               else loop fld.PropertyType))
-                elif isTuple t' then
-                    FSharpType.GetTupleElements(t')
-                    |> Array.exists (fun ptyp -> 
-                        ptyp = t || if ptyp = t' then false else loop t')
-                else false
-            loop t
         let readFldFromPrecomputed (r: obj -> obj[]) =
             let mutable the = obj()
             let mutable cached = [||]
@@ -329,9 +355,9 @@ type Lens =
                 match Map.tryFind name virtualDbFields with
                 | Some project -> (fun _ _ _ -> ()), project prefix
                 | None ->
-                    if primOrPrimArray typ then
+                    if isPrim typ then
                         prim reader primitives.[typ] name false
-                    elif primOption typ then
+                    elif isPrimOption typ then
                         primOpt reader primitives.[typ.GenericTypeArguments.[0]]
                             fld.PropertyType name
                     elif not (isRecursive typ) && (isRecord typ || isTuple typ) then 
@@ -352,26 +378,33 @@ type Lens =
             let tag = FSharpValue.PreComputeUnionTagReader(typ, true)
             let mutable clearPrecomputedCache = []
             let case (c: UnionCaseInfo) =
-                let (readFld, clearCache) = 
-                    readFldFromPrecomputed (FSharpValue.PreComputeUnionReader(c, true))
-                clearPrecomputedCache <- clearCache :: clearPrecomputedCache
-                let injectAndProject = c.GetFields() |> Array.mapi (fun i fld ->
-                    let reader o = readFld (reader o) i
-                    let typ = fld.PropertyType
-                    let name = prefix + sep + c.Name + sep + fld.Name
-                    match Map.tryFind name virtualDbFields with
-                    | Some project -> (fun _ _ _ -> ()), project prefix
-                    | None ->
-                        if primOrPrimArray typ then
-                            prim reader primitives.[typ] name false
-                        elif primOption typ then
-                            primOpt reader primitives.[typ.GenericTypeArguments.[0]] 
-                                fld.PropertyType name
-                        elif not (isRecursive typ) && (isRecord typ || isTuple typ) then 
-                            subLens typ reader (name + sep)
-                        elif not (isRecursive typ) && isUnion typ then 
-                            subLens typ reader name
-                        else json typ reader name)
+                let fields = c.GetFields ()
+                let injectAndProject =
+                    if fields = [||] then [||]
+                    else
+                        let (readFld, clearCache) = 
+                            readFldFromPrecomputed 
+                                (FSharpValue.PreComputeUnionReader(c, true))
+                        clearPrecomputedCache <- clearCache :: clearPrecomputedCache
+                        fields |> Array.mapi (fun i fld ->
+                            let reader o = readFld (reader o) i
+                            let typ = fld.PropertyType
+                            let name = prefix + sep + c.Name + sep + fld.Name
+                            match Map.tryFind name virtualDbFields with
+                            | Some project -> (fun _ _ _ -> ()), project prefix
+                            | None ->
+                                if isPrim typ then
+                                    prim reader primitives.[typ] name false
+                                elif isPrimOption typ then
+                                    primOpt reader 
+                                        primitives.[typ.GenericTypeArguments.[0]]
+                                        fld.PropertyType name
+                                elif not (isRecursive typ) 
+                                     && (isRecord typ || isTuple typ) then
+                                    subLens typ reader (name + sep)
+                                elif not (isRecursive typ) && isUnion typ then 
+                                    subLens typ reader name
+                                else json typ reader name)
                 let inject cols sidx case =
                     injectAndProject |> Array.iter (fun (inj, _) -> inj cols sidx case)
                 let project c = injectAndProject |> Array.map (fun (_, proj) -> proj c)
@@ -402,9 +435,9 @@ type Lens =
                 match Map.tryFind (prefix + name) virtualDbFields with
                 | Some project -> (fun _ _ _ -> ()), project prefix
                 | None ->
-                    if primOrPrimArray typ then
+                    if isPrim typ then
                         prim reader primitives.[typ] name false
-                    elif primOption typ then
+                    elif isPrimOption typ then
                         primOpt reader primitives.[typ.GenericTypeArguments.[0]]
                             typ name
                     elif not (isRecursive typ) && (isRecord typ || isTuple typ) then
