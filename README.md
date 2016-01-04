@@ -1,6 +1,6 @@
 # FLenser
 
-A simple object relational mapper for F# record types.
+A simple object relational mapper for F# algebraic types.
 
 ## Installation
 
@@ -8,7 +8,6 @@ NuGet Packages are avaliable. There is a package for the core FLenser.Core, as w
 as a package for each database provider, e.g. FLenser.PostgreSQL.
 
 ## Example with SQLite
-A lightweight object relational mapper for F# record types.
 
     type a = 
         { foo: int
@@ -33,9 +32,9 @@ A lightweight object relational mapper for F# record types.
 
     let lens = Lens.Create<t>()
 
-A lens maps an F# record type to database columns. Lens.Create uses reflection 
-to build two functions (held internally) that translate the type to, and from the 
-database columns.
+A lens maps an F# algebraic type (record, union, or tuple) to database columns. Lens.Create 
+uses reflection to build two functions (held internally) that translate the type to, and from 
+the database columns.
 
     let init =
         Query.Create
