@@ -189,7 +189,7 @@ type Lens =
             | o -> failwith (sprintf "cannot convert %A to int32" o)
         let primitives = 
             let std r n = getp r n r.GetValue
-            [ typeof<Boolean>.GUID, 
+            [ typeof<Boolean>, 
                 (fun r n -> getp r n (fun i ->
                     match r.GetValue i with
                     | :? bool as x -> x
@@ -199,28 +199,28 @@ type Lens =
                     | :? int64 as x -> x > 0L
                     | o -> failwith (sprintf "can't cast %A to boolean" o)
                     |> box))
-              typeof<Double>.GUID, std
-              typeof<String>.GUID, std
-              typeof<array<_>>.GUID, std
-              typeof<DateTime>.GUID, 
+              typeof<Double>, std
+              typeof<String>, std
+              typeof<array<_>>, std
+              typeof<DateTime>, 
                 (fun r n -> getp r n (fun i ->
                     match r.GetValue i with
                     | :? DateTime as x -> x
                     | :? String as x -> DateTime.Parse x
                     | o -> failwith (sprintf "can't cast %A to DateTime" o)
                     |> box))
-              typeof<TimeSpan>.GUID, 
+              typeof<TimeSpan>, 
                 (fun r n -> getp r n (fun i ->
                     match r.GetValue i with
                     | :? TimeSpan as x -> x
                     | :? String as x -> TimeSpan.Parse x
                     | o -> failwith (sprintf "can't cast %A to TimeSpan" o)
                     |> box))
-              typeof<byte[]>.GUID, std
-              typeof<int>.GUID, 
+              typeof<byte[]>, std
+              typeof<int>, 
                 (fun r n -> getp r n (fun i ->
                     box (objToInt32 (r.GetValue i))))
-              typeof<int64>.GUID, 
+              typeof<int64>, 
                 (fun r n -> getp r n (fun i ->
                     match r.GetValue i with
                     | :? int64 as x -> x
@@ -229,7 +229,7 @@ type Lens =
                     | :? int32 as x -> int64 x
                     | o -> failwith (sprintf "cannot convert %A to int64" o)
                     |> box)) ]
-            |> Map.ofList
+            |> dict
         let json (typ: Type) reader name =
             let pk = FsPickler.GeneratePickler(typ)
             let e = System.Text.Encoding.UTF8
@@ -240,14 +240,15 @@ type Lens =
                     jsonSer.UnPickleUntyped(e.GetBytes s, pk, encoding = e))
                 name false
         let primOrPrimArray (typ: Type) =
-            Map.containsKey typ.GUID primitives 
+            primitives.ContainsKey typ
             && (not typ.IsArray 
                 || (typ.HasElementType
                     && (let elt = typ.GetElementType() 
-                        Map.containsKey elt.GUID primitives
+                        primitives.ContainsKey elt
                         && not elt.IsArray)))
         let primOption (typ: Type) =
-            typ.GUID = typeof<Option<_>>.GUID 
+            typ.IsGenericType
+            && typ.GetGenericTypeDefinition() = typedefof<Option<_>> 
             && (primOrPrimArray typ.GenericTypeArguments.[0])
         let isRecord t = FSharpType.IsRecord(t, true)
         let isUnion t = FSharpType.IsUnion(t, true)
@@ -274,13 +275,15 @@ type Lens =
                 | [mi] ->
                     let pars = mi.GetParameters()
                     let ret = mi.ReturnParameter.ParameterType
-                    if ret.GUID = typeof<lens<_>>.GUID 
+                    if ret.IsGenericType
+                       && ret.GetGenericTypeDefinition() = typedefof<lens<_>>
                        && mi.IsStatic
                        && ret.GenericTypeArguments.[0] = typ
                        && Array.length pars = 1
                        && (let (p, ptyp) = pars.[0], pars.[0].ParameterType
                            p.Name = "prefix"
-                           && ptyp.GUID = typeof<Option<_>>.GUID
+                           && ptyp.IsGenericType
+                           && ptyp.GetGenericTypeDefinition() = typedefof<Option<_>>
                            && ptyp.GenericTypeArguments.[0] = typeof<String>)
                     then 
                         let lens = mi.Invoke(null, [|(Some prefix) :> obj|]) :?> rawLens
@@ -307,9 +310,9 @@ type Lens =
                     if isRecord typ then subLens typ reader (name + sep)
                     elif isUnion typ then subLens typ reader name
                     elif primOrPrimArray typ then
-                        prim reader primitives.[typ.GUID] name false
+                        prim reader primitives.[typ] name false
                     elif primOption typ then
-                        primOpt reader primitives.[typ.GenericTypeArguments.[0].GUID]
+                        primOpt reader primitives.[typ.GenericTypeArguments.[0]]
                             fld.PropertyType name
                     else json typ reader name)
             let construct = FSharpValue.PreComputeRecordConstructor(typ, true)
@@ -338,9 +341,9 @@ type Lens =
                         if isRecord typ then subLens typ reader (name + sep)
                         elif isUnion typ then subLens typ reader name
                         elif primOrPrimArray typ then
-                            prim reader primitives.[typ.GUID] name false
+                            prim reader primitives.[typ] name false
                         elif primOption typ then
-                            primOpt reader primitives.[typ.GenericTypeArguments.[0].GUID] 
+                            primOpt reader primitives.[typ.GenericTypeArguments.[0]] 
                                 fld.PropertyType name
                         else json typ reader name)
                 let inject cols sidx case =
@@ -376,9 +379,9 @@ type Lens =
                     if isRecord typ then subLens typ reader (name + sep)
                     elif isUnion typ then subLens typ reader name
                     elif primOrPrimArray typ then
-                        prim reader primitives.[typ.GUID] name false
+                        prim reader primitives.[typ] name false
                     elif primOption typ then
-                        primOpt reader primitives.[typ.GenericTypeArguments.[0].GUID]
+                        primOpt reader primitives.[typ.GenericTypeArguments.[0]]
                             typ name
                     else json typ reader name)
             let construct = FSharpValue.PreComputeTupleConstructor typ
