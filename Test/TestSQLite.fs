@@ -81,7 +81,7 @@ module T2 =
                     r.GetValue(r.GetOrdinal(prefix + "id"))
                 let writeCat (r: u) = box (r.x + r.x)
                 Lens.Create<u>(virtualDbFields = Map.ofList ["id", readid],
-                               virtualRecordFields = Map.ofList ["cat", writeCat],
+                               virtualTypeFields = Map.ofList ["cat", writeCat],
                                ?prefix = prefix)
 
     type t = {a: int; b: float; c: String; thing: u}
@@ -101,6 +101,31 @@ module T2 =
     let byCat = 
         Query.Create("select * from bar where thing$cat = :p", lens, Parameter.String("p"))
 
+module T3 =
+    type location =
+        | Unknown
+        | Address of street:String * city:String * postcode:String
+        | Latlon of lat:float * lon:float
+
+    type t = String * location
+
+    let lens = Lens.Create<t>()
+
+    let init = 
+        let cols = String.Join(", ", lens.Columns)
+        Query.Create(sprintf "create table loc (%s)" cols, Lens.NonQuery)
+
+    let items =
+        ["Random Place", Latlon (52.7110053, -2.778698)
+         "Office", Address ("10 Chiswell St", "London", "EC1Y4XY")
+         "Aliens", Unknown]
+
+    let byTag =
+        Query.Create("select * from loc where item1 = :tag", lens,
+            Parameter.String("tag"))
+
+    let everywhere = Query.Create("select * from loc", lens)
+
 let joined = 
     Query.Create("select * from foo join bar on foo.id = bar.thing$id", 
         Lens.Tuple(T1.lens, T2.lens))
@@ -115,7 +140,8 @@ let setupasync () = async {
     let! _ = db.NonQuery(T2.init, ())
     do! db.Transaction (fun db -> async {
             do! db.Insert("foo", T1.lens, T1.items) 
-            do! db.Insert("bar", T2.lens, T2.items) })
+            do! db.Insert("bar", T2.lens, T2.items)
+            do! db.Insert("loc", T3.lens, T3.items) })
     return db }
 
 let setup () = 
@@ -124,7 +150,8 @@ let setup () =
     db.NonQuery(T2.init, ()) |> ignore
     db.Transaction(fun db -> 
         db.Insert("foo", T1.lens, T1.items)
-        db.Insert("bar", T2.lens, T2.items))
+        db.Insert("bar", T2.lens, T2.items)
+        db.Insert("loc", T3.lens, T3.items))
     db
 
 let testSpeed () = 
@@ -159,7 +186,12 @@ let main argv =
             then failwith (sprintf "2: %A" i2.[0])
             let! i3 = db.Query(T2.byCat, "foofoo")
             if i3.[0] <> List.head T2.items then failwith (sprintf "2: %A" i3.[0])
-            let! i4 = db.Query(joined, ())
-            i4 |> Seq.iter (printfn "%A")
+            let! i4 = db.Query(T3.byTag, "Random Place")
+            if i4.[0] <> List.head T3.items then failwith (sprintf "3: %A" i4.[0])
+            let! i5 = db.Query(T3.everywhere, ())
+            Seq.iter2 (fun db loc -> if db <> loc then failwith (sprintf "4: %A" db)) 
+                i5 T3.items
+            let! i6 = db.Query(joined, ())
+            i6 |> Seq.iter (printfn "%A")
         } |> Async.RunSynchronously
     0
