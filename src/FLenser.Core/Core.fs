@@ -253,6 +253,28 @@ type Lens =
         let isRecord t = FSharpType.IsRecord(t, true)
         let isUnion t = FSharpType.IsUnion(t, true)
         let isTuple t = FSharpType.IsTuple(t)
+        let isRecursive (t: Type) =
+            let rec loop t' =
+                if isRecord t' then
+                    FSharpType.GetRecordFields(t', true)
+                    |> Array.exists (fun fld ->
+                        fld.PropertyType = t
+                        || if fld.PropertyType = t' then false
+                           else loop fld.PropertyType)
+                elif isUnion t' then
+                    FSharpType.GetUnionCases(t', true)
+                    |> Array.exists (fun c ->
+                        c.GetFields()
+                        |> Array.exists (fun fld ->
+                            fld.PropertyType = t
+                            || if fld.PropertyType = t' then false
+                               else loop fld.PropertyType))
+                elif isTuple t' then
+                    FSharpType.GetTupleElements(t')
+                    |> Array.exists (fun ptyp -> 
+                        ptyp = t || if ptyp = t' then false else loop t')
+                else false
+            loop t
         let readFldFromPrecomputed (r: obj -> obj[]) =
             let mutable the = obj()
             let mutable cached = [||]
@@ -307,8 +329,10 @@ type Lens =
                 match Map.tryFind name virtualDbFields with
                 | Some project -> (fun _ _ _ -> ()), project prefix
                 | None ->
-                    if isRecord typ then subLens typ reader (name + sep)
-                    elif isUnion typ then subLens typ reader name
+                    if not (isRecursive typ) && (isRecord typ || isTuple typ) then 
+                        subLens typ reader (name + sep)
+                    elif not (isRecursive typ) && isUnion typ then 
+                        subLens typ reader name
                     elif primOrPrimArray typ then
                         prim reader primitives.[typ] name false
                     elif primOption typ then
@@ -338,8 +362,10 @@ type Lens =
                     match Map.tryFind name virtualDbFields with
                     | Some project -> (fun _ _ _ -> ()), project prefix
                     | None ->
-                        if isRecord typ then subLens typ reader (name + sep)
-                        elif isUnion typ then subLens typ reader name
+                        if not (isRecursive typ) && (isRecord typ || isTuple typ) then 
+                            subLens typ reader (name + sep)
+                        elif not (isRecursive typ) && isUnion typ then 
+                            subLens typ reader name
                         elif primOrPrimArray typ then
                             prim reader primitives.[typ] name false
                         elif primOption typ then
@@ -376,8 +402,10 @@ type Lens =
                 match Map.tryFind (prefix + name) virtualDbFields with
                 | Some project -> (fun _ _ _ -> ()), project prefix
                 | None ->
-                    if isRecord typ then subLens typ reader (name + sep)
-                    elif isUnion typ then subLens typ reader name
+                    if not (isRecursive typ) && (isRecord typ || isTuple typ) then
+                        subLens typ reader (name + sep)
+                    elif not (isRecursive typ) && isUnion typ then 
+                        subLens typ reader name
                     elif primOrPrimArray typ then
                         prim reader primitives.[typ] name false
                     elif primOption typ then
@@ -393,10 +421,10 @@ type Lens =
                 construct a
             (inject, project)
         and createInjectProject (typ: Type) (reader: obj -> obj) prefix =
-            if isRecord typ then record typ reader prefix
-            elif isUnion typ then union typ reader prefix
-            elif isTuple typ then tuple typ reader prefix
-            else failwith "the root type must be a record, union, or tuple type"
+            if not (isRecursive typ) && isRecord typ then record typ reader prefix
+            elif not (isRecursive typ) && isUnion typ then union typ reader prefix
+            elif not (isRecursive typ) && isTuple typ then tuple typ reader prefix
+            else failwith "the root type must be a non recursive record, union, or tuple type"
         let (inject, project) = createInjectProject typ id prefix
         lens<'A>(columns.ToArray(),
             (fun cols startidx t -> 
