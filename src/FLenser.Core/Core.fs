@@ -777,14 +777,16 @@ module Async =
                     seq.Enqueue(async {
                         let (o, pi) = 
                             prepareInsert lens preparedInserts provider table con
-                        do! ts |> Seq.map (fun t -> async {
-                                Array.Clear(o, 0, o.Length)
-                                lens.Inject(o, 0, t)
-                                return! pi.RowAsync o })
-                            |> Seq.toList
-                            |> Async.sequence
-                            |> Async.Ignore
-                        return! pi.FinishAsync () })
+                        if Seq.isEmpty ts then return ()
+                        else
+                            do! ts |> Seq.map (fun t -> async {
+                                    Array.Clear(o, 0, o.Length)
+                                    lens.Inject(o, 0, t)
+                                    return! pi.RowAsync o })
+                                |> Seq.toList
+                                |> Async.sequence
+                                |> Async.Ignore
+                            return! pi.FinishAsync () })
                 member db.Transaction(f) = async {
                     let (rollback, commit) = buildTxn txn provider savepoints con
                     try
@@ -899,11 +901,12 @@ type Db internal () =
                 read q.Lens r)
             member __.Insert(table, lens: lens<'A>, a: seq<'A>) = 
                 let (o, pi) = Async.prepareInsert lens preparedInserts provider table con
-                for t in a do
-                    Array.Clear(o, 0, o.Length)
-                    lens.Inject(o, 0, t)
-                    pi.Row o
-                pi.Finish()
+                if not <| Seq.isEmpty a then
+                    for t in a do
+                        Array.Clear(o, 0, o.Length)
+                        lens.Inject(o, 0, t)
+                        pi.Row o
+                    pi.Finish()
             member db.Transaction(f) =
                 let (rollback, commit) = Async.buildTxn txn provider savepoints con
                 try

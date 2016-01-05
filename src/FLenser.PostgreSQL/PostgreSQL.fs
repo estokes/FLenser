@@ -56,44 +56,47 @@ let create (csb: NpgsqlConnectionStringBuilder) =
         member __.Dispose() = ()
 
         member __.PrepareInsert(con, tbl, columns) =
-            let mutable w : Option<NpgsqlBinaryImporter> = None
+            let w : ref<Option<NpgsqlBinaryImporter>> = ref None
             {new PreparedInsert with
                 member t.Dispose() = 
-                    match w with
-                    | None -> ()
-                    | Some o -> t.Finish()
+                    lock w (fun () -> 
+                        match !w with
+                        | None -> ()
+                        | Some o -> t.Finish())
                 
                 member __.Finish() = 
-                    match w with
-                    | None -> failwith "no write in progress!"
-                    | Some o -> 
-                        w <- None
-                        o.Close ()
+                    lock w (fun () -> 
+                        match !w with
+                        | None -> failwith "no write in progress!"
+                        | Some o -> 
+                            w := None
+                            o.Close ())
                 
                 member __.Row(o) =
-                    let w =
-                        match w with
-                        | Some w -> w
-                        | None ->
-                            let sql = 
-                                sprintf "COPY %s (%s) FROM STDIN BINARY" tbl (String.Join (", ", columns))
-                            let b = con.BeginBinaryImport(sql)
-                            w <- Some b
-                            b
-                    w.StartRow()
-                    for i=0 to o.Length - 1 do
-                        match o.[i] with
-                        | null -> w.WriteNull()
-                        | :? bool as x -> w.Write<bool>(x, NpgsqlDbType.Boolean)
-                        | :? DateTime as x -> w.Write<DateTime>(x, NpgsqlDbType.Timestamp)
-                        | :? float as x -> w.Write<float>(x, NpgsqlDbType.Double)
-                        | :? int32 as x -> w.Write<int32>(x, NpgsqlDbType.Integer)
-                        | :? int64 as x -> w.Write<int64>(x, NpgsqlDbType.Bigint)
-                        | :? String as x -> w.Write<String>(x, NpgsqlDbType.Text)
-                        | :? TimeSpan as x -> w.Write<TimeSpan>(x, NpgsqlDbType.Interval)
-                        | :? array<byte> as x -> w.Write<byte[]>(x, NpgsqlDbType.Bytea)
-                        | :? json as x -> w.Write(x.Data, NpgsqlDbType.Jsonb)
-                        | x -> w.Write(x, NpgsqlDbType.Unknown)
+                    lock w (fun () -> 
+                        let w =
+                            match !w with
+                            | Some w -> w
+                            | None ->
+                                let sql = 
+                                    sprintf "COPY %s (%s) FROM STDIN BINARY" tbl (String.Join (", ", columns))
+                                let b = con.BeginBinaryImport(sql)
+                                w := Some b
+                                b
+                        w.StartRow()
+                        for i=0 to o.Length - 1 do
+                            match o.[i] with
+                            | null -> w.WriteNull()
+                            | :? bool as x -> w.Write<bool>(x, NpgsqlDbType.Boolean)
+                            | :? DateTime as x -> w.Write<DateTime>(x, NpgsqlDbType.Timestamp)
+                            | :? float as x -> w.Write<float>(x, NpgsqlDbType.Double)
+                            | :? int32 as x -> w.Write<int32>(x, NpgsqlDbType.Integer)
+                            | :? int64 as x -> w.Write<int64>(x, NpgsqlDbType.Bigint)
+                            | :? String as x -> w.Write<String>(x, NpgsqlDbType.Text)
+                            | :? TimeSpan as x -> w.Write<TimeSpan>(x, NpgsqlDbType.Interval)
+                            | :? array<byte> as x -> w.Write<byte[]>(x, NpgsqlDbType.Bytea)
+                            | :? json as x -> w.Write(x.Data, NpgsqlDbType.Jsonb)
+                            | x -> w.Write(x, NpgsqlDbType.Unknown))
                 
                 member p.RowAsync(o) = async {
                     do! Async.SwitchToThreadPool()
