@@ -98,21 +98,20 @@ let create (csb: NpgsqlConnectionStringBuilder) =
                             | :? json as x -> w.Write(x.Data, NpgsqlDbType.Jsonb)
                             | x -> w.Write(x, NpgsqlDbType.Unknown))
                 
-                member p.RowAsync(o) = async {
-                    do! Async.SwitchToThreadPool()
-                    p.Row(o) }
-                
-                member p.FinishAsync() = async {
-                    do! Async.SwitchToThreadPool()
-                    p.Finish() } }
+                member p.RowAsync(o) = async { p.Row(o) }
+                member p.FinishAsync() = async { p.Finish() } }
 
         member __.HasNestedTransactions = true
         member __.NestedTransaction(con, t) =
             let name = "savepoint" + savepoint.ToString()
             savepoint <- savepoint + 1
-            t.Save(name)
+            match t.Connection with
+            | null -> ()
+            | _ -> t.Save(name)
             name
         member __.CommitNested(con, t, s) = savepoint <- savepoint - 1
         member __.RollbackNested(con, t, name) =
             savepoint <- savepoint - 1
-            t.Rollback(name) }
+            match t.Connection with
+            | null -> ()
+            | _ -> t.Rollback(name) }

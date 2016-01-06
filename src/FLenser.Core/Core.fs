@@ -711,8 +711,16 @@ module Async =
         lock txn (fun () -> 
             let std (t: DbTransaction) =
                 let rst () = txn := None; savepoints.Clear ()
-                (fun () -> lock txn (fun () -> rst (); t.Rollback ())),
-                (fun () -> lock txn (fun () -> rst (); t.Commit ()))
+                (fun () -> lock txn (fun () -> 
+                    rst ()
+                    match t.Connection with
+                    | null -> ()
+                    | _ -> t.Rollback ())),
+                (fun () -> lock txn (fun () -> 
+                    rst ()
+                    match t.Connection with
+                    | null -> ()
+                    | _ -> t.Commit ()))
             match !txn with
             | None ->
                 let t = provider.BeginTransaction con
