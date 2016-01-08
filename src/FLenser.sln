@@ -7,9 +7,8 @@ Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "FLenser.Core", "FLenser.Cor
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{131EB4CD-8425-4B72-9FC3-0D40A164CC4D}"
 	ProjectSection(SolutionItems) = preProject
-		LICENSE = LICENSE
 		paket.dependencies = paket.dependencies
-		README.md = README.md
+		..\README.md = ..\README.md
 	EndProjectSection
 EndProject
 Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "FLenser.PostgreSQL", "FLenser.PostgreSQL\FLenser.PostgreSQL.fsproj", "{22E1C399-8EFD-4050-86F1-DF5F48F7BA90}"

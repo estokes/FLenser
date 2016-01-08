@@ -9,6 +9,12 @@ as a package for each database provider, e.g. FLenser.PostgreSQL.
 
 ## Example with SQLite
 
+    open System
+    open System.Data.Common
+    open System.Data.SQLite
+    open System.Collections.Generic
+    open FLenser.Core
+
     type a = 
         { foo: int
           bar: String
