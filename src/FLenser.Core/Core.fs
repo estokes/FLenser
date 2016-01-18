@@ -55,36 +55,36 @@ type lens<'A> internal (columns: String[],
 type NonQuery = {nothing: unit}
 
 module Utils =
+    open System.Threading
     type Sequencer() =
-        let mutable running = false
-        let jobs = Queue<Async<Unit> * AsyncResultCell<Unit>>()
+        let running = ref 0
+        let jobs = Queue<Async<Unit> * Async<Unit>>()
         let rec loop () = async {
             let job =
                 lock jobs (fun () -> 
                     if jobs.Count > 0 then Some (jobs.Dequeue ())
                     else 
-                        running <- false
+                        ignore (Interlocked.Decrement running)
                         None)
             match job with
             | None -> ()
             | Some (job, finished) ->
                 Async.Start job
-                do! finished.AsyncResult
+                do! finished
                 return! loop () }
-        member __.Enqueue(job : Async<'A>) : Async<'A> =
+        member __.Enqueue(job : Async<'A>) : Async<'A> = async {
             let res = AsyncResultCell()
-            let finished = AsyncResultCell()
             let job = async {
                 try
                     let! z = job
                     res.RegisterResult (AsyncOk z)
                 with e -> 
-                    return res.RegisterResult (AsyncException e)
-                finished.RegisterResult (AsyncOk ()) }
+                    return res.RegisterResult (AsyncException e) }
             lock jobs (fun () ->
-                jobs.Enqueue(job, finished)
-                if running = false then Async.StartImmediate (loop ()))
-            res.AsyncResult
+                jobs.Enqueue(job, res.AsyncResult |> Async.Ignore)
+                if Interlocked.CompareExchange(running, 1, 0) = 0 then 
+                    Async.StartImmediate (loop ()))
+            return! res.AsyncResult }
 
     type Result<'A, 'B> =
         | Ok of 'A
