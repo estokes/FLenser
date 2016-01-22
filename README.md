@@ -2,6 +2,12 @@
 
 A simple object relational mapper for F# algebraic types.
 
+Type providers and query expressions can be great, however FLenser is for you if,
+
+* You don't want the complexity of setting up type providers in your dev/prod environment
+* You want to work directly with F# algebraic types instead of traditional objects
+* You don't mind (or prefer) using SQL directly
+
 ## Installation
 
 NuGet Packages are avaliable. There is a package for the core FLenser.Core, as well
@@ -78,7 +84,7 @@ in other databases.
 
 Here we create a query to look up objects by the 'item' column, and then execute it. SQLite is
 very fast, and while the Lens infrastructure does impose some overhead, the above query runs in
-a little under 20us. That's about 20 times slower than a Dictionary lookup, however if you need
+a little under 16us. That's about 16 times slower than a Dictionary lookup, however if you need
 to run complex queries on your objects using SQLite as an in memory store could save you quite a lot
 of work. Also, since objects in SQLite are outside the managed heap, the garbage collector won't
 look at them anymore, which is potentially very useful for infrequently used objects.
