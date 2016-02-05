@@ -38,12 +38,13 @@ type internal rawLens =
     abstract member InjectRaw: obj[] * int * obj -> unit
     abstract member ProjectRaw: DbDataReader -> obj
 
-type lens<'A> internal (columns: String[], 
+type lens<'A> internal (columns: String[], types: Type[],
                         inject: obj[] -> int -> 'A -> unit, 
                         project: DbDataReader -> 'A) =
     let guid = Guid.NewGuid ()
     member __.Guid with get() = guid
     member __.Columns with get() = columns
+    member __.Types with get() = types
     member internal __.Inject(target: obj[], startidx:int, v) = inject target startidx v
     member internal __.Project(r) = project r
     interface rawLens with
@@ -100,14 +101,15 @@ module Utils =
         if not (Set.isEmpty is) then
             failwith (sprintf "column names have a non empty intersection %A" is)
         let columns = Array.append lensA.Columns lensB.Columns
-        lens<'T1 * 'T2>(columns, 
+        let types = Array.append lensA.Types lensB.Types
+        lens<'T1 * 'T2>(columns, types,
             (fun cols startidx (v1, v2) -> 
                 lensA.Inject(cols, startidx, v1)
                 lensB.Inject(cols, startidx + lensA.Columns.Length, v2)),
             (fun r -> (lensA.Project r, lensB.Project r)))
 
     let ofInjProj (merged: lens<_>) inject project = 
-        lens<_>(merged.Columns, inject, project)
+        lens<_>(merged.Columns, merged.Types, inject, project)
 
     let ai a = defaultArg a Set.empty
 
@@ -115,7 +117,7 @@ module Utils =
     let NonQueryLens =
         let guid = Guid.NewGuid()
         let project (r: DbDataReader) = ignore r
-        lens<NonQuery>([||], (fun _ _ _ -> ()), (fun _ -> NonQuery))
+        lens<NonQuery>([||], [||], (fun _ _ _ -> ()), (fun _ -> NonQuery))
 
     let getp (r: DbDataReader) name f = f (ord r name)
     let objToInt32 (o: obj) =
@@ -247,18 +249,22 @@ type Lens =
         let virtualTypeFields = defaultArg virtualTypeFields Map.empty
         let typ = typeof<'A>
         let jsonSer = FsPickler.CreateJsonSerializer(indent = false, omitHeader = true)
-        let columns = List<_>(capacity = 10)
-        let createColumnSlot name =
+        let columns = List(capacity = 10)
+        let types = List(capacity = 10)
+        let createColumnSlot name typ =
             let id = columns.Count
             columns.Add name
+            types.Add typ
             id
         let vdf = 
             virtualTypeFields 
-            |> Map.map (fun k v -> createColumnSlot (prefix + k), v)
+            |> Map.map (fun k v ->
+                let typ = v.GetType().GenericTypeArguments.[0]
+                createColumnSlot (prefix + k) typ , v)
         let prim (inject: obj -> obj) 
             (project: DbDataReader -> String -> obj)
-            (name: String) (nullok: bool) =
-            let colid = createColumnSlot name
+            (name: String) (nullok: bool) typ =
+            let colid = createColumnSlot name typ
             let inject (a: obj[]) startidx (record : obj) : unit = 
                 a.[colid + startidx] <- inject record
             let project (r: DbDataReader) : obj = 
@@ -290,7 +296,7 @@ type Lens =
                 else 
                     let o = project r name
                     mkSome [|o|]
-            prim inject project name true
+            prim inject project name true rtyp
         let json (typ: Type) reader name =
             let pk = FsPickler.GeneratePickler(typ)
             let e = System.Text.Encoding.UTF8
@@ -303,7 +309,7 @@ type Lens =
                         | :? String as x -> e.GetBytes x
                         | o -> failwith (sprintf "can't convert %A to byte[]" o)
                     jsonSer.UnPickleUntyped(s, pk, encoding = e))
-                name false
+                name false typ
         let readFldFromPrecomputed (r: obj -> obj[]) =
             let mutable the = obj()
             let mutable cached = [||]
@@ -359,10 +365,10 @@ type Lens =
                 | Some project -> (fun _ _ _ -> ()), project prefix
                 | None ->
                     if isPrim typ then
-                        prim reader primitives.[typ] name false
+                        prim reader primitives.[typ] name false typ
                     elif isPrimOption typ then
                         primOpt reader primitives.[typ.GenericTypeArguments.[0]]
-                            fld.PropertyType name
+                            typ name
                     elif not (isRecursive typ) && (isRecord typ || isTuple typ) then 
                         subLens typ reader (name + sep)
                     elif not (isRecursive typ) && isUnion typ then 
@@ -377,7 +383,7 @@ type Lens =
             (inject, project)
         and union (typ: Type) reader prefix =
             let prefix = if prefix = "" then typ.Name else prefix
-            let colid = createColumnSlot prefix
+            let colid = createColumnSlot prefix typeof<int>
             let tag = FSharpValue.PreComputeUnionTagReader(typ, true)
             let mutable clearPrecomputedCache = []
             let case (c: UnionCaseInfo) =
@@ -397,11 +403,11 @@ type Lens =
                             | Some project -> (fun _ _ _ -> ()), project prefix
                             | None ->
                                 if isPrim typ then
-                                    prim reader primitives.[typ] name false
+                                    prim reader primitives.[typ] name false typ
                                 elif isPrimOption typ then
                                     primOpt reader 
                                         primitives.[typ.GenericTypeArguments.[0]]
-                                        fld.PropertyType name
+                                        typ name
                                 elif not (isRecursive typ) 
                                      && (isRecord typ || isTuple typ) then
                                     subLens typ reader (name + sep)
@@ -439,7 +445,7 @@ type Lens =
                 | Some project -> (fun _ _ _ -> ()), project prefix
                 | None ->
                     if isPrim typ then
-                        prim reader primitives.[typ] name false
+                        prim reader primitives.[typ] name false typ
                     elif isPrimOption typ then
                         primOpt reader primitives.[typ.GenericTypeArguments.[0]]
                             typ name
@@ -457,21 +463,17 @@ type Lens =
                 construct a
             (inject, project)
         and createInjectProject (typ: Type) (reader: obj -> obj) prefix =
-            let e = "to create a lens from a single column primitive (or serialized type) you must specify a prefix" 
+            let prefix = if prefix = "" then "Item" else prefix
             if not (isRecursive typ) && isPrim typ then
-                if prefix = "" then failwith e
-                else prim reader primitives.[typ] prefix false
+                prim reader primitives.[typ] prefix false typ
             elif not (isRecursive typ) && isPrimOption typ then
-                if prefix = "" then failwith e
-                else primOpt reader primitives.[typ.GenericTypeArguments.[0]] typ prefix
+                primOpt reader primitives.[typ.GenericTypeArguments.[0]] typ prefix
             elif not (isRecursive typ) && isRecord typ then record typ reader prefix
             elif not (isRecursive typ) && isUnion typ then union typ reader prefix
             elif not (isRecursive typ) && isTuple typ then tuple typ reader prefix
-            else 
-                if prefix = "" then failwith e
-                else json typ reader prefix
+            else json typ reader prefix
         let (inject, project) = createInjectProject typ id prefix
-        lens<'A>(columns.ToArray(),
+        lens<'A>(columns.ToArray(), types.ToArray(),
             (fun cols startidx t -> 
                 inject cols startidx (box t)
                 vdf |> Map.iter (fun k (id, inject) -> 
@@ -521,12 +523,24 @@ type Lens =
                 t.Inject(cols, startidx, ((a, b, c, d), e)))
             (fun r -> let ((a, b, c, d), e) = t.Project r in (a, b, c, d, e))
 
-type parameter<'A> internal (name: String) =
-    member __.Name with get() = name
-    member __.Type with get() = typeof<'A>
+type parameter<'A> =
+    | Single of name:String * typ:Type
+    | FromLens of lens<'A> * vals:obj[]
+    member p.Pars = 
+        match p with
+        | Single (name, typ) -> [|name, typ|]
+        | FromLens (l, _) -> Array.zip l.Columns l.Types
+    member p.Inject (c: DbParameterCollection) (v: 'A) (i: int) =
+        match p with
+        | Single _ -> c.[i].Value <- v; i + 1
+        | FromLens (l, vals) -> 
+            l.Inject(vals, 0, v)
+            vals |> Array.iteri (fun j v -> c.[i + j].Value <- v)
+            i + vals.Length
 
 type Parameter =
-    static member Create<'A>(name: String) = parameter<'A>(name)
+    static member private Create<'A>(name: String) = 
+        Single (name, typeof<'A>) : parameter<'A>
     static member String(name) = Parameter.Create<String>(name)
     static member Int(name) = Parameter.Create<int>(name)
     static member Int64(name) = Parameter.Create<int64>(name)
@@ -535,6 +549,8 @@ type Parameter =
     static member ByteArray(name) = Parameter.Create<byte[]>(name)
     static member DateTime(name) = Parameter.Create<DateTime>(name)
     static member TimeSpan(name) = Parameter.Create<TimeSpan>(name)
+    static member OfLens(lens: lens<'A>) : parameter<'A> = 
+        FromLens (lens, Array.create lens.Columns.Length null)
 
 type query<'A, 'B> internal (sql:String, lens:lens<'B>, pars: (String * Type)[],
                              set:DbParameterCollection -> 'A -> unit) =
@@ -553,108 +569,97 @@ type Query private () =
     static member Create(sql, lens: lens<'B>) = 
         new query<unit, 'B>(sql, lens, [||], fun _ _ -> ())
     static member Create(sql, lens, p1:parameter<'P1>) =
-        new query<_,_>(sql, lens, [|p1.Name, p1.Type|], 
-            fun p (p1: 'P1) -> p.[0].Value <- p1)
+        new query<_,_>(sql, lens, p1.Pars, 
+            fun p (p1v: 'P1) -> p1.Inject p p1v 0 |> ignore)
     static member Create(sql, lens, p1:parameter<'P1>, p2:parameter<'P2>) =
-        new query<_,_>(sql, lens, [|p1.Name, p1.Type; p2.Name, p2.Type|],
-            fun p (p1: 'P1, p2: 'P2) -> p.[0].Value <- p1; p.[1].Value <- p2)
+        new query<_,_>(sql, lens, Array.concat [|p1.Pars; p2.Pars|],
+            fun p (p1v: 'P1, p2v: 'P2) -> 
+                p1.Inject p p1v 0 |> p2.Inject p p2v |> ignore)
     static member Create(sql, lens, p1:parameter<'P1>, p2:parameter<'P2>, 
                          p3:parameter<'P3>) =
         new query<_, _>(sql, lens, 
-            [|p1.Name, p1.Type; p2.Name, p2.Type; p3.Name, p3.Type|],
-            fun p (p1: 'P1, p2: 'P2, p3: 'P3) -> 
-                p.[0].Value <- p1; p.[1].Value <- p2
-                p.[2].Value <- p3)
+            Array.concat [|p1.Pars; p2.Pars; p3.Pars|],
+            fun p (p1v: 'P1, p2v: 'P2, p3v: 'P3) ->
+                p1.Inject p p1v 0 |> p2.Inject p p2v |> p3.Inject p p3v |> ignore)
     static member Create
         (sql, lens, p1:parameter<'P1>, p2:parameter<'P2>, p3:parameter<'P3>, 
          p4:parameter<'P4>) =
         new query<_, _>(sql, lens, 
-            [|p1.Name, p1.Type; p2.Name, p2.Type; p3.Name, p3.Type
-              p4.Name, p4.Type|],
-            fun p (p1: 'P1, p2: 'P2, p3: 'P3, p4: 'P4) -> 
-                p.[0].Value <- p1; p.[1].Value <- p2
-                p.[2].Value <- p3; p.[3].Value <- p4)
+            Array.concat [|p1.Pars; p2.Pars; p3.Pars; p4.Pars|],
+            fun p (p1v: 'P1, p2v: 'P2, p3v: 'P3, p4v: 'P4) ->
+                p1.Inject p p1v 0 |> p2.Inject p p2v |> p3.Inject p p3v 
+                |> p4.Inject p p4v |> ignore)
     static member Create
         (sql, lens, p1:parameter<'P1>, p2:parameter<'P2>, 
          p3:parameter<'P3>, p4:parameter<'P4>, p5:parameter<'P5>) =
         new query<_, _>(sql, lens, 
-            [|p1.Name, p1.Type; p2.Name, p2.Type; p3.Name, p3.Type
-              p4.Name, p4.Type; p5.Name, p5.Type|],
-            fun p (p1: 'P1, p2: 'P2, p3: 'P3, p4: 'P4, p5: 'P5) -> 
-                p.[0].Value <- p1; p.[1].Value <- p2
-                p.[2].Value <- p3; p.[3].Value <- p4
-                p.[4].Value <- p5)
+            Array.concat [|p1.Pars; p2.Pars; p3.Pars; p4.Pars; p5.Pars|],
+            fun p (p1v: 'P1, p2v: 'P2, p3v: 'P3, p4v: 'P4, p5v: 'P5) ->
+                p1.Inject p p1v 0 |> p2.Inject p p2v |> p3.Inject p p3v
+                |> p4.Inject p p4v |> p5.Inject p p5v |> ignore)
     static member Create
         (sql, lens, p1:parameter<'P1>, p2:parameter<'P2>, 
          p3:parameter<'P3>, p4:parameter<'P4>, p5:parameter<'P5>,
          p6:parameter<'P6>) =
         new query<_,_>(sql, lens, 
-            [|p1.Name, p1.Type; p2.Name, p2.Type; p3.Name, p3.Type
-              p4.Name, p4.Type; p5.Name, p5.Type; p6.Name, p6.Type|],
-            fun p (p1: 'P1, p2: 'P2, p3: 'P3, p4: 'P4, p5: 'P5, p6: 'P6) ->
-                p.[0].Value <- p1; p.[1].Value <- p2
-                p.[2].Value <- p3; p.[3].Value <- p4
-                p.[4].Value <- p5; p.[5].Value <- p6)
+            Array.concat [|p1.Pars; p2.Pars; p3.Pars; p4.Pars; p5.Pars; p6.Pars|],
+            fun p (p1v: 'P1, p2v: 'P2, p3v: 'P3, p4v: 'P4, p5v: 'P5, p6v: 'P6) ->
+                p1.Inject p p1v 0 |> p2.Inject p p2v |> p3.Inject p p3v
+                |> p4.Inject p p4v |> p5.Inject p p5v |> p6.Inject p p6v
+                |> ignore)
     static member Create
         (sql, lens, p1:parameter<'P1>, p2:parameter<'P2>, 
          p3:parameter<'P3>, p4:parameter<'P4>, p5:parameter<'P5>,
          p6:parameter<'P6>, p7:parameter<'P7>) =
         new query<_,_>(sql, lens, 
-            [|p1.Name, p1.Type; p2.Name, p2.Type; p3.Name, p3.Type
-              p4.Name, p4.Type; p5.Name, p5.Type; p6.Name, p6.Type
-              p7.Name, p7.Type|],
-            fun p (p1: 'P1, p2: 'P2, p3: 'P3, p4: 'P4, p5: 'P5, p6: 'P6, p7: 'P7) ->
-                p.[0].Value <- p1; p.[1].Value <- p2
-                p.[2].Value <- p3; p.[3].Value <- p4
-                p.[4].Value <- p5; p.[5].Value <- p6
-                p.[6].Value <- p7)
+            [|p1.Pars; p2.Pars; p3.Pars; p4.Pars; p5.Pars; p6.Pars; p7.Pars|]
+            |> Array.concat,
+            fun p (p1v: 'P1, p2v: 'P2, p3v: 'P3, p4v: 'P4, p5v: 'P5, p6v: 'P6, p7v: 'P7) ->
+                p1.Inject p p1v 0 |> p2.Inject p p2v |> p3.Inject p p3v
+                |> p4.Inject p p4v |> p5.Inject p p5v |> p6.Inject p p6v
+                |> p7.Inject p p7v |> ignore)
     static member Create
         (sql, lens, p1:parameter<'P1>, p2:parameter<'P2>, 
          p3:parameter<'P3>, p4:parameter<'P4>, p5:parameter<'P5>,
          p6:parameter<'P6>, p7:parameter<'P7>, p8:parameter<'P8>) =
         new query<_,_>(sql, lens, 
-            [|p1.Name, p1.Type; p2.Name, p2.Type; p3.Name, p3.Type
-              p4.Name, p4.Type; p5.Name, p5.Type; p6.Name, p6.Type
-              p7.Name, p7.Type; p8.Name, p8.Type|],
-            fun p (p1: 'P1, p2: 'P2, p3: 'P3, p4: 'P4, 
-                   p5: 'P5, p6: 'P6, p7: 'P7, p8: 'P8) ->
-                p.[0].Value <- p1; p.[1].Value <- p2
-                p.[2].Value <- p3; p.[3].Value <- p4
-                p.[4].Value <- p5; p.[5].Value <- p6
-                p.[6].Value <- p7; p.[7].Value <- p8)            
+            [|p1.Pars; p2.Pars; p3.Pars; p4.Pars; p5.Pars; p6.Pars; p7.Pars; p8.Pars|]
+            |> Array.concat,
+            fun p (p1v: 'P1, p2v: 'P2, p3v: 'P3, p4v: 'P4, 
+                   p5v: 'P5, p6v: 'P6, p7v: 'P7, p8v: 'P8) ->
+                p1.Inject p p1v 0 |> p2.Inject p p2v |> p3.Inject p p3v
+                |> p4.Inject p p4v |> p5.Inject p p5v |> p6.Inject p p6v
+                |> p7.Inject p p7v |> p8.Inject p p8v |> ignore)            
     static member Create
         (sql, lens, p1:parameter<'P1>, p2:parameter<'P2>, 
          p3:parameter<'P3>, p4:parameter<'P4>, p5:parameter<'P5>,
          p6:parameter<'P6>, p7:parameter<'P7>, p8:parameter<'P8>,
          p9:parameter<'P9>) =
         new query<_,_>(sql, lens, 
-            [|p1.Name, p1.Type; p2.Name, p2.Type; p3.Name, p3.Type
-              p4.Name, p4.Type; p5.Name, p5.Type; p6.Name, p6.Type
-              p7.Name, p7.Type; p8.Name, p8.Type; p9.Name, p9.Type|],
-            fun p (p1: 'P1, p2: 'P2, p3: 'P3, p4: 'P4, 
-                   p5: 'P5, p6: 'P6, p7: 'P7, p8: 'P8, p9: 'P9) ->
-                p.[0].Value <- p1; p.[1].Value <- p2
-                p.[2].Value <- p3; p.[3].Value <- p4
-                p.[4].Value <- p5; p.[5].Value <- p6
-                p.[6].Value <- p7; p.[7].Value <- p8
-                p.[8].Value <- p9)
+            [|p1.Pars; p2.Pars; p3.Pars; p4.Pars; p5.Pars; p6.Pars
+              p7.Pars; p8.Pars; p9.Pars|]
+            |> Array.concat,
+            fun p (p1v: 'P1, p2v: 'P2, p3v: 'P3, p4v: 'P4, 
+                   p5v: 'P5, p6v: 'P6, p7v: 'P7, p8v: 'P8, p9v: 'P9) ->
+                p1.Inject p p1v 0 |> p2.Inject p p2v |> p3.Inject p p3v
+                |> p4.Inject p p4v |> p5.Inject p p5v |> p6.Inject p p6v
+                |> p7.Inject p p7v |> p8.Inject p p8v |> p9.Inject p p9v
+                |> ignore)
     static member Create
         (sql, lens, p1:parameter<'P1>, p2:parameter<'P2>, 
          p3:parameter<'P3>, p4:parameter<'P4>, p5:parameter<'P5>,
          p6:parameter<'P6>, p7:parameter<'P7>, p8:parameter<'P8>,
          p9:parameter<'P9>, p10:parameter<'P10>) =
         new query<_,_>(sql, lens, 
-            [|p1.Name, p1.Type; p2.Name, p2.Type; p3.Name, p3.Type
-              p4.Name, p4.Type; p5.Name, p5.Type; p6.Name, p6.Type
-              p7.Name, p7.Type; p8.Name, p8.Type; p9.Name, p9.Type
-              p10.Name, p10.Type|],
-            fun p (p1: 'P1, p2: 'P2, p3: 'P3, p4: 'P4, 
-                   p5: 'P5, p6: 'P6, p7: 'P7, p8: 'P8, p9: 'P9, p10: 'P10) ->
-                p.[0].Value <- p1; p.[1].Value <- p2
-                p.[2].Value <- p3; p.[3].Value <- p4
-                p.[4].Value <- p5; p.[5].Value <- p6
-                p.[6].Value <- p7; p.[7].Value <- p8
-                p.[8].Value <- p9; p.[9].Value <- p10)
+            [|p1.Pars; p2.Pars; p3.Pars; p4.Pars; p5.Pars; p6.Pars
+              p7.Pars; p8.Pars; p9.Pars; p10.Pars|]
+            |> Array.concat,
+            fun p (p1v: 'P1, p2v: 'P2, p3v: 'P3, p4v: 'P4, 
+                   p5v: 'P5, p6v: 'P6, p7v: 'P7, p8v: 'P8, p9v: 'P9, p10v: 'P10) ->
+                p1.Inject p p1v 0 |> p2.Inject p p2v |> p3.Inject p p3v
+                |> p4.Inject p p4v |> p5.Inject p p5v |> p6.Inject p p6v
+                |> p7.Inject p p7v |> p8.Inject p p8v |> p9.Inject p p9v
+                |> p10.Inject p p10v |> ignore)
 
 type PreparedInsert =
     inherit IDisposable

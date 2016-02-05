@@ -113,7 +113,8 @@ type virtualDbField = String -> DbDataReader -> obj
 [<Class>]
 type lens<'A> =
     member Guid : Guid with get
-    member Columns : string [] with get
+    member Columns: string [] with get
+    member Types: Type[] with get
 
 type NonQuery
 
@@ -167,13 +168,10 @@ type Lens =
         * lensD:lens<'D> * lensE:lens<'E> * ?allowedIntersection:Set<String> 
         -> lens<'A * 'B * 'C * 'D * 'E>
 
-[<Class>]
-type parameter<'A> = 
-    member Name: String
+type parameter<'A>
 
 [<Class>]
 type Parameter =
-    static member Create: name:String -> parameter<'A>
     static member String: name:String -> parameter<String>
     static member Int: name:String -> parameter<int>
     static member Int64: name:String -> parameter<int64>
@@ -182,6 +180,7 @@ type Parameter =
     static member ByteArray: name:String -> parameter<byte[]>
     static member DateTime: name:String -> parameter<DateTime>
     static member TimeSpan: name:String -> parameter<TimeSpan>
+    static member OfLens: lens<'A> -> parameter<'A>
 
 [<Class>]
 type query<'A, 'B> = 
