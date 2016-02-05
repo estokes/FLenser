@@ -21,6 +21,8 @@ open FSharpx.Control
 open System.Data.SQLite
 open FLenser.Core
 
+let print x = x |> Seq.iter (printfn "%A")
+
 module T1 =
     type a = 
         { foo: int
@@ -69,6 +71,33 @@ module T1 =
 
     let all = Query.Create("select * from foo", lens)
 
+    let changeThing =
+        let tl = Lens.Create<z>(prefix = "thing$")
+        let sql =
+            sprintf "update foo set (%s) = (%s) where item = :p1" 
+                (String.Join(", ", tl.Columns))
+                (String.Join(", ", tl.Columns |> Array.map ((+) ":")))
+        Query.Create(sql, Lens.NonQuery, Parameter.String("p1"), Parameter.OfLens tl)
+
+    let runtests (db: Async.db) = async {
+        let! i1 = db.Query(byItem, "foo")
+        print i1
+        if i1.[0] <> List.head items then failwith (sprintf "0: %A" i1.[0])
+        let! _ = db.NonQuery(changeBar, ("hello", 0L))
+        let! i2 = db.Query(byItem, "foo")
+        print i2
+        if i2.[0] = List.head items then failwith (sprintf "1: %A" i2.[0])
+        if i2.[0] <> {(List.head items) with 
+                            thing = A {foo = 42; bar = "hello"; baz = None}}
+        then failwith (sprintf "2: %A" i2.[0])
+        let newthing = A {foo = 42; bar = "42"; baz = Some 42.}
+        do! db.NonQuery(changeThing, ("baz", newthing)) |> Async.Ignore
+        let! i3 = db.Query(byItem, "baz")
+        if i3.[0] <> {(List.item 2 items) with thing = newthing} then
+            failwith (sprintf "thing should be newthing %A" i3)
+        let! i7 = db.Query(all, ())
+        print i7 }
+
 module T2 =
     type u = 
         {id: int64
@@ -103,6 +132,12 @@ module T2 =
     let byCat = 
         Query.Create("select * from bar where thing$cat = :p", lens, Parameter.String("p"))
 
+    let runtests (db: Async.db) = async {
+        let! i3 = db.Query(byCat, "foofoo")
+        print i3
+        if i3.[0] <> List.head items then 
+            failwith (sprintf "T2 store/retreive fail: %A" i3.[0]) }
+
 module T3 =
     type location =
         | Unknown
@@ -132,9 +167,25 @@ module T3 =
         Query.Create("select item1 from loc", 
             Lens.Create<String>(prefix = "item1"))
 
-let joined = 
-    Query.Create("select * from foo left outer join bar on foo.id = bar.thing$id", 
-        Lens.Tuple(T1.lens, Lens.Optional(T2.lens)))
+    let joined = 
+        Query.Create("select * from foo left outer join bar on foo.id = bar.thing$id", 
+            Lens.Tuple(T1.lens, Lens.Optional(T2.lens)))
+
+    let runtests (db: Async.db) = async {
+        let! i4 = db.Query(byTag, "Random Place")
+        print i4
+        if i4.[0] <> List.head items then failwith (sprintf "3: %A" i4.[0])
+        let! i5 = db.Query(everywhere, ())
+        print i5
+        Seq.iter2 (fun db loc -> if db <> loc then failwith (sprintf "4: %A" db)) 
+            i5 items
+        let! i6 = db.Query(joined, ())
+        print i6
+        let! i8 = db.Query(justNames, ())
+        print i8
+        Seq.iter2 (fun name (name', _) -> 
+            if name <> name' then failwith (sprintf "5: %A" name))
+            i8 items }
 
 let cs = SQLiteConnectionStringBuilder("DataSource=:memory:")
 cs.JournalMode <- SQLiteJournalModeEnum.Off
@@ -182,37 +233,10 @@ let main argv =
         let cs = SQLiteConnectionStringBuilder("DataSource=:memory:")
         cs.JournalMode <- SQLiteJournalModeEnum.Off
         cs.CacheSize <- 0
-        let print x = x |> Seq.iter (printfn "%A")
         async {
             let! db = setupasync ()
-            let! i1 = db.Query(T1.byItem, "foo")
-            print i1
-            if i1.[0] <> List.head T1.items then failwith (sprintf "0: %A" i1.[0])
-            let! _ = db.NonQuery(T1.changeBar, ("hello", 0L))
-            let! i2 = db.Query(T1.byItem, "foo")
-            print i2
-            if i2.[0] = List.head T1.items then failwith (sprintf "1: %A" i2.[0])
-            if i2.[0] <> {(List.head T1.items) with 
-                                thing = T1.A {foo = 42; bar = "hello"; baz = None}}
-            then failwith (sprintf "2: %A" i2.[0])
-            let! i3 = db.Query(T2.byCat, "foofoo")
-            print i3
-            if i3.[0] <> List.head T2.items then failwith (sprintf "2: %A" i3.[0])
-            let! i4 = db.Query(T3.byTag, "Random Place")
-            print i4
-            if i4.[0] <> List.head T3.items then failwith (sprintf "3: %A" i4.[0])
-            let! i5 = db.Query(T3.everywhere, ())
-            print i5
-            Seq.iter2 (fun db loc -> if db <> loc then failwith (sprintf "4: %A" db)) 
-                i5 T3.items
-            let! i6 = db.Query(joined, ())
-            print i6
-            let! i7 = db.Query(T1.all, ())
-            print i7
-            let! i8 = db.Query(T3.justNames, ())
-            print i8
-            Seq.iter2 (fun name (name', _) -> 
-                if name <> name' then failwith (sprintf "5: %A" name))
-                i8 T3.items
+            do! T1.runtests db
+            do! T2.runtests db
+            do! T3.runtests db
         } |> Async.RunSynchronously
     0
