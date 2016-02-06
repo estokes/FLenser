@@ -191,6 +191,7 @@ let cs = SQLiteConnectionStringBuilder("DataSource=:memory:")
 cs.JournalMode <- SQLiteJournalModeEnum.Off
 cs.CacheSize <- 0
 
+//IO.Directory.SetCurrentDirectory(@"C:\Users\Eric\git\FLenser\src\Test\bin\Debug")
 let setupasync () = async {
     let! db = Async.Db.Connect(FLenser.SQLite.Provider.create cs)
     let! _ = db.NonQuery(T1.init, ())

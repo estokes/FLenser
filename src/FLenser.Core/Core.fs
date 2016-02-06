@@ -259,7 +259,8 @@ type Lens =
         let vdf = 
             virtualTypeFields 
             |> Map.map (fun k v ->
-                let typ = v.GetType().GenericTypeArguments.[0]
+                let typ = 
+                    v.GetType().GetMethod("Invoke").GetParameters().[0].ParameterType
                 createColumnSlot (prefix + k) typ , v)
         let prim (inject: obj -> obj) 
             (project: DbDataReader -> String -> obj)
@@ -463,11 +464,12 @@ type Lens =
                 construct a
             (inject, project)
         and createInjectProject (typ: Type) (reader: obj -> obj) prefix =
-            let prefix = if prefix = "" then "Item" else prefix
+            let singletonPrefix = if prefix.Trim() <> "" then prefix else "Item"
             if not (isRecursive typ) && isPrim typ then
-                prim reader primitives.[typ] prefix false typ
+                prim reader primitives.[typ] singletonPrefix false typ
             elif not (isRecursive typ) && isPrimOption typ then
-                primOpt reader primitives.[typ.GenericTypeArguments.[0]] typ prefix
+                primOpt reader primitives.[typ.GenericTypeArguments.[0]] typ 
+                    singletonPrefix
             elif not (isRecursive typ) && isRecord typ then record typ reader prefix
             elif not (isRecursive typ) && isUnion typ then union typ reader prefix
             elif not (isRecursive typ) && isTuple typ then tuple typ reader prefix
