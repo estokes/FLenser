@@ -443,7 +443,7 @@ type Lens =
                 readFldFromPrecomputed (FSharpValue.PreComputeTupleReader typ)
             let injectProject = flds |> Array.mapi (fun i typ ->
                 let reader o = readFld (reader o) i
-                let name = prefix @ ["Item"; (i + 1).ToString()]
+                let name = prefix @ ["Item" + (i + 1).ToString()]
                 match Map.tryFind name virtualDbFields with
                 | Some (prefix, name, project) -> (fun _ _ _ -> ()), project prefix name
                 | None ->
