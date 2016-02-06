@@ -2,7 +2,7 @@
     Copyright (C) 2015 Eric Stokes 
 
     This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
+    it under the terms of the GNU Library General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
     (at your option) any later version.
 
@@ -39,10 +39,10 @@ type virtualTypeField<'A> = 'A -> obj
 
 (* a virtual db field is an F# type field that is derived from a function
    on the columns of the database. The first argument is the nesting prefix of
-   the type, should you need that. By default nothing will be done with the field
-   when the type is inserted into the database, if you want to do something with it
-   then also make a virtual type field. *)
-type virtualDbField = String -> DbDataReader -> obj
+   the type, the second is the fully qualified name of the field, should you need that. 
+   By default nothing will be done with the field when the type is inserted into the database, 
+   if you want to do something with it then also make a virtual type field. *)
+type virtualDbField = String -> String -> DbDataReader -> obj
 
 (* A Lens bidirectionally maps an F# algebraic data type to a database row type. Lenses only work on
    F# algebraic types (records, unions, and tuples), however if those types contain some other object

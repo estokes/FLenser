@@ -72,7 +72,7 @@ module T1 =
     let all = Query.Create("select * from foo", lens)
 
     let changeThing =
-        let tl = Lens.Create<z>(prefix = "thing")
+        let tl = Lens.Create<z>(prefix = ["thing"])
         let sql =
             sprintf "update foo set %s where item = :p1"
                 (String.Join(", ", tl.Columns |> Array.map (fun c -> c + " = :" + c)))
@@ -107,8 +107,8 @@ module T2 =
                 // this will cause us not to write the id, but read it as
                 // normal. That's what we want since we are going to let
                 // the database pick it
-                let readid prefix (r: DbDataReader) = 
-                    r.GetValue(r.GetOrdinal(prefix + "id"))
+                let readid id (r: DbDataReader) = 
+                    r.GetValue(r.GetOrdinal(id))
                 let writeCat (r: u) = box (r.x + r.x)
                 Lens.Create<u>(virtualDbFields = Map.ofList ["id", readid],
                                virtualTypeFields = Map.ofList ["cat", writeCat],

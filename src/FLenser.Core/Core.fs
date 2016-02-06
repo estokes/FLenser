@@ -2,7 +2,7 @@
     Copyright (C) 2015 Eric Stokes 
 
     This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
+    it under the terms of the GNU Library General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
     (at your option) any later version.
 
@@ -28,7 +28,7 @@ open System.Reflection
 exception UnexpectedNull
 
 type virtualTypeField<'A> = 'A -> obj
-type virtualDbField = String -> DbDataReader -> obj
+type virtualDbField = String -> String -> DbDataReader -> obj
 
 type json internal (data: String) =
     member __.Data with get() = data
@@ -248,7 +248,7 @@ type Lens =
             defaultArg virtualDbFields Map.empty
             |> Map.fold (fun m k v ->
                 let name = prefix @ k
-                Map.add name (stringifypath name, v) m) Map.empty
+                Map.add name (stringifypath prefix, stringifypath name, v) m) Map.empty
         let virtualTypeFields = defaultArg virtualTypeFields Map.empty
         let typ = typeof<'A>
         let jsonSer = FsPickler.CreateJsonSerializer(indent = false, omitHeader = true)
@@ -368,7 +368,7 @@ type Lens =
                 let name = prefix @ [fld.Name]
                 let typ = fld.PropertyType
                 match Map.tryFind name virtualDbFields with
-                | Some (name, project) -> (fun _ _ _ -> ()), project name
+                | Some (prefix, name, project) -> (fun _ _ _ -> ()), project prefix name
                 | None ->
                     if isPrim typ then
                         prim reader primitives.[typ] name false typ
@@ -404,7 +404,8 @@ type Lens =
                             let typ = fld.PropertyType
                             let name = prefix @ [c.Name; fld.Name]
                             match Map.tryFind name virtualDbFields with
-                            | Some (name, project) -> (fun _ _ _ -> ()), project name
+                            | Some (prefix, name, project) -> 
+                                (fun _ _ _ -> ()), project prefix name
                             | None ->
                                 if isPrim typ then
                                     prim reader primitives.[typ] name false typ
@@ -444,7 +445,7 @@ type Lens =
                 let reader o = readFld (reader o) i
                 let name = prefix @ ["Item"; (i + 1).ToString()]
                 match Map.tryFind name virtualDbFields with
-                | Some (name, project) -> (fun _ _ _ -> ()), project name
+                | Some (prefix, name, project) -> (fun _ _ _ -> ()), project prefix name
                 | None ->
                     if isPrim typ then
                         prim reader primitives.[typ] name false typ
