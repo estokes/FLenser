@@ -72,11 +72,10 @@ module T1 =
     let all = Query.Create("select * from foo", lens)
 
     let changeThing =
-        let tl = Lens.Create<z>(prefix = "thing$")
+        let tl = Lens.Create<z>(prefix = "thing")
         let sql =
-            sprintf "update foo set (%s) = (%s) where item = :p1" 
-                (String.Join(", ", tl.Columns))
-                (String.Join(", ", tl.Columns |> Array.map ((+) ":")))
+            sprintf "update foo set %s where item = :p1"
+                (String.Join(", ", tl.Columns |> Array.map (fun c -> c + " = :" + c)))
         Query.Create(sql, Lens.NonQuery, Parameter.String("p1"), Parameter.OfLens tl)
 
     let runtests (db: Async.db) = async {
