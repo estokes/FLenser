@@ -139,9 +139,9 @@ type CreateSubLensAttribute =
 [<Class>]
 type Lens =
     // Create a lens for type A
-    static member Create : ?virtualDbFields:Map<String,virtualDbField> 
-        * ?virtualTypeFields:Map<String,virtualTypeField<'A>> 
-        * ?prefix:String * ?nestingSeparator:String -> lens<'A>
+    static member Create : ?virtualDbFields:Map<list<String>,virtualDbField> 
+        * ?virtualTypeFields:Map<list<String>,virtualTypeField<'A>> 
+        * ?prefix:list<String> * ?nestingSeparator:String -> lens<'A>
     // A special lens that reads nothing, used for side effecting queries
     static member NonQuery: lens<NonQuery> with get
     // Given an A Lens, produce an optional A Lens. When reading, if all columns of
