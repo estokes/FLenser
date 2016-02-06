@@ -13,6 +13,15 @@ Type providers and query expressions can be great, however FLenser is for you if
 NuGet Packages are avaliable. There is a package for the core FLenser.Core, as well
 as a package for each database provider, e.g. FLenser.PostgreSQL.
 
+## Recent Changes
+
+1.4
+* Lenses may now be used as parameters, which for one greatly simplifies large update
+statements, and also opens up many structured query possibilities.
+* prefix, and map keys of virtual fields are now string lists, each element representing
+a token that will be separated by the nesting separator internally. This simplifies both
+the internal and external handling of nesting.
+
 ## Example with SQLite
 
     open System
