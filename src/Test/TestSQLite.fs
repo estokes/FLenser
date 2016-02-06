@@ -107,11 +107,11 @@ module T2 =
                 // this will cause us not to write the id, but read it as
                 // normal. That's what we want since we are going to let
                 // the database pick it
-                let readid id (r: DbDataReader) = 
+                let readid prefix id (r: DbDataReader) = 
                     r.GetValue(r.GetOrdinal(id))
                 let writeCat (r: u) = box (r.x + r.x)
-                Lens.Create<u>(virtualDbFields = Map.ofList ["id", readid],
-                               virtualTypeFields = Map.ofList ["cat", writeCat],
+                Lens.Create<u>(virtualDbFields = Map.ofList [["id"], readid],
+                               virtualTypeFields = Map.ofList [["cat"], writeCat],
                                ?prefix = prefix)
 
     type t = {a: int; b: float; c: String; thing: u}
@@ -164,7 +164,7 @@ module T3 =
 
     let justNames = 
         Query.Create("select item1 from loc", 
-            Lens.Create<String>(prefix = "item1"))
+            Lens.Create<String>(prefix = ["item1"]))
 
     let joined = 
         Query.Create("select * from foo left outer join bar on foo.id = bar.thing$id", 

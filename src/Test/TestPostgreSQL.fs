@@ -13,13 +13,13 @@ type agent =
       phone: String }
     [<CreateSubLens>]
     static member Lens(?prefix) =
-        let pfx = defaultArg prefix ""
+        let pfx = defaultArg prefix []
         let id : virtualDbField = 
-            fun prefix r -> 
-                let ord = r.GetOrdinal (prefix + "id")
+            fun prefix name r -> 
+                let ord = r.GetOrdinal name
                 box (r.GetInt32 ord)
         Lens.Create<agent>(?prefix = prefix, 
-            virtualDbFields = Map.ofList ["id", id])
+            virtualDbFields = Map.ofList [["id"], id])
     static member Empty =
         { id = 0; firstName = ""; lastName = ""; companyName = ""
           email = ""; phone = "" }
