@@ -38,12 +38,13 @@ type internal rawLens =
     abstract member InjectRaw: obj[] * int * obj -> unit
     abstract member ProjectRaw: DbDataReader -> obj
 
-type lens<'A> internal (columns: String[], types: Type[],
+type lens<'A> internal (columns: String[], types: Type[], paths: array<list<String>>,
                         inject: obj[] -> int -> 'A -> unit, 
                         project: DbDataReader -> 'A) =
     let guid = Guid.NewGuid ()
     member __.Guid with get() = guid
     member __.Columns with get() = columns
+    member __.Paths with get() = paths
     member __.Types with get() = types
     member internal __.Inject(target: obj[], startidx:int, v) = inject target startidx v
     member internal __.Project(r) = project r
@@ -102,14 +103,15 @@ module Utils =
             failwith (sprintf "column names have a non empty intersection %A" is)
         let columns = Array.append lensA.Columns lensB.Columns
         let types = Array.append lensA.Types lensB.Types
-        lens<'T1 * 'T2>(columns, types,
+        let paths = Array.append lensA.Paths lensB.Paths
+        lens<'T1 * 'T2>(columns, types, paths,
             (fun cols startidx (v1, v2) -> 
                 lensA.Inject(cols, startidx, v1)
                 lensB.Inject(cols, startidx + lensA.Columns.Length, v2)),
             (fun r -> (lensA.Project r, lensB.Project r)))
 
     let ofInjProj (merged: lens<_>) inject project = 
-        lens<_>(merged.Columns, merged.Types, inject, project)
+        lens<_>(merged.Columns, merged.Types, merged.Paths, inject, project)
 
     let ai a = defaultArg a Set.empty
 
@@ -117,7 +119,7 @@ module Utils =
     let NonQueryLens =
         let guid = Guid.NewGuid()
         let project (r: DbDataReader) = ignore r
-        lens<NonQuery>([||], [||], (fun _ _ _ -> ()), (fun _ -> NonQuery))
+        lens<NonQuery>([||], [||], [||], (fun _ _ _ -> ()), (fun _ -> NonQuery))
 
     let getp (r: DbDataReader) name f = f (ord r name)
     let objToInt32 (o: obj) =
@@ -254,8 +256,10 @@ type Lens =
         let jsonSer = FsPickler.CreateJsonSerializer(indent = false, omitHeader = true)
         let columns = List(capacity = 10)
         let types = List(capacity = 10)
+        let paths = List(capacity = 10)
         let createColumnSlot name typ =
             let id = columns.Count
+            paths.Add name
             let name = stringifypath name
             columns.Add name
             types.Add typ
@@ -476,7 +480,7 @@ type Lens =
             elif not (isRecursive typ) && isTuple typ then tuple typ reader prefix
             else json typ reader prefix
         let (inject, project) = createInjectProject typ id prefix
-        lens<'A>(columns.ToArray(), types.ToArray(),
+        lens<'A>(columns.ToArray(), types.ToArray(), paths.ToArray(),
             (fun cols startidx t -> 
                 inject cols startidx (box t)
                 vdf |> Map.iter (fun k (id, inject) -> 
@@ -528,15 +532,15 @@ type Lens =
 
 type parameter<'A> =
     | Single of name:String * typ:Type
-    | FromLens of lens<'A> * vals:obj[]
+    | FromLens of lens<'A> * names:String[] * vals:obj[]
     member p.Pars = 
         match p with
         | Single (name, typ) -> [|name, typ|]
-        | FromLens (l, _) -> Array.zip l.Columns l.Types
+        | FromLens (l, names, _) -> Array.zip names l.Types
     member p.Inject (c: DbParameterCollection) (v: 'A) (i: int) =
         match p with
         | Single _ -> c.[i].Value <- v; i + 1
-        | FromLens (l, vals) -> 
+        | FromLens (l, _, vals) -> 
             l.Inject(vals, 0, v)
             vals |> Array.iteri (fun j v -> c.[i + j].Value <- v)
             i + vals.Length
@@ -552,8 +556,10 @@ type Parameter =
     static member ByteArray(name) = Parameter.Create<byte[]>(name)
     static member DateTime(name) = Parameter.Create<DateTime>(name)
     static member TimeSpan(name) = Parameter.Create<TimeSpan>(name)
-    static member OfLens(lens: lens<'A>) : parameter<'A> = 
-        FromLens (lens, Array.create lens.Columns.Length null)
+    static member OfLens(lens: lens<'A>, ?paramNestingSep) : parameter<'A> =
+        let pns = defaultArg paramNestingSep "_"
+        let names = lens.Paths |> Array.map (fun p -> String.Join(pns, p))
+        FromLens (lens, names, Array.create lens.Columns.Length null)
 
 type query<'A, 'B> internal (sql:String, lens:lens<'B>, pars: (String * Type)[],
                              set:DbParameterCollection -> 'A -> unit) =

@@ -113,7 +113,9 @@ type virtualDbField = String -> String -> DbDataReader -> obj
 [<Class>]
 type lens<'A> =
     member Guid : Guid with get
-    member Columns: string [] with get
+    member Columns: String[] with get
+    // Same as columns but not joined by the nesting sep
+    member Paths: list<String>[] with get
     member Types: Type[] with get
 
 type NonQuery
@@ -180,7 +182,7 @@ type Parameter =
     static member ByteArray: name:String -> parameter<byte[]>
     static member DateTime: name:String -> parameter<DateTime>
     static member TimeSpan: name:String -> parameter<TimeSpan>
-    static member OfLens: lens<'A> -> parameter<'A>
+    static member OfLens: lens<'A> * ?paramNestingSep:String -> parameter<'A>
 
 [<Class>]
 type query<'A, 'B> = 
