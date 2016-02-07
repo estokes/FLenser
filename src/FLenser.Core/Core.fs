@@ -542,7 +542,8 @@ type parameter<'A> =
         | Single _ -> c.[i].Value <- v; i + 1
         | FromLens (l, _, vals) -> 
             l.Inject(vals, 0, v)
-            vals |> Array.iteri (fun j v -> c.[i + j].Value <- v)
+            vals |> Array.iteri (fun j v -> 
+                c.[i + j].Value <- match v with null -> box DBNull.Value | v -> v)
             i + vals.Length
 
 type Parameter =
@@ -711,7 +712,9 @@ module Async =
             let cmd = con.CreateCommand()
             let pars = 
                 q.Parameters |> Array.map (fun (name, typ) -> 
-                    (provider.CreateParameter(name, typ) :> DbParameter))
+                    let p = (provider.CreateParameter(name, typ) :> DbParameter)
+                    p.IsNullable <- true
+                    p)
             cmd.Connection <- con
             cmd.CommandText <- q.Sql 
             cmd.Parameters.AddRange pars
