@@ -319,7 +319,7 @@ type Lens =
                         | :? String as x -> e.GetBytes x
                         | o -> failwith (sprintf "can't convert %A to byte[]" o)
                     jsonSer.UnPickleUntyped(s, pk, encoding = e))
-                name false typ
+                name false typeof<json> 
         let readFldFromPrecomputed (r: obj -> obj[]) =
             let mutable the = obj()
             let mutable cached = [||]

@@ -20,3 +20,7 @@ open FLenser.Core
 
 val create: NpgsqlConnectionStringBuilder 
     -> Provider<NpgsqlConnection,NpgsqlParameter,NpgsqlTransaction>
+
+(* give the postgres type associated with the specified type, or raise Failure if there is
+   no mapping. *)
+val pgTypeName: Type -> String

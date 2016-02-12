@@ -23,6 +23,25 @@ open FLenser.Core
 open Npgsql
 open NpgsqlTypes
 
+let pgTypeAndName (typ: Type) = 
+    // this is much slower than matching with :? which is why
+    // we don't combine the two mappings of pgtypes
+    if typ = typeof<bool> then (NpgsqlDbType.Boolean, "boolean")
+    elif typ = typeof<DateTime> then (NpgsqlDbType.Timestamp, "timestamp")
+    elif typ = typeof<float> then (NpgsqlDbType.Double, "double precision")
+    elif typ = typeof<int> then (NpgsqlDbType.Integer, "int")
+    elif typ = typeof<int64> then (NpgsqlDbType.Bigint, "bigint")
+    elif typ = typeof<String> then (NpgsqlDbType.Text, "text")
+    elif typ = typeof<TimeSpan> then (NpgsqlDbType.Interval, "interval")
+    elif typ = typeof<byte> then (NpgsqlDbType.Bytea, "bytea")
+    elif typ = typeof<json> then (NpgsqlDbType.Jsonb, "jsonb")
+    else (NpgsqlDbType.Unknown, "")
+
+let pgTypeName typ = 
+    let (_, name) = pgTypeAndName typ
+    if name = "" then failwith (sprintf "no postgres mapping of type %s" typ.Name)
+    else name
+
 let create (csb: NpgsqlConnectionStringBuilder) =
     let mutable savepoint = 0
     { new Provider<_,_,_> with
@@ -37,18 +56,7 @@ let create (csb: NpgsqlConnectionStringBuilder) =
             con
 
         member __.CreateParameter(name, typ) =
-            // this is much slower than matching with :? which is why
-            // we don't combine the two mappings of pgtypes
-            let pgtyp =
-                if typ = typeof<bool> then NpgsqlDbType.Boolean
-                elif typ = typeof<DateTime> then NpgsqlDbType.Timestamp
-                elif typ = typeof<float> then NpgsqlDbType.Double
-                elif typ = typeof<int> then NpgsqlDbType.Integer
-                elif typ = typeof<int64> then NpgsqlDbType.Bigint
-                elif typ = typeof<String> then NpgsqlDbType.Text
-                elif typ = typeof<TimeSpan> then NpgsqlDbType.Interval
-                elif typ = typeof<byte> then NpgsqlDbType.Bytea
-                else NpgsqlDbType.Unknown
+            let pgtyp = fst (pgTypeAndName typ)
             NpgsqlParameter(name, pgtyp)
 
         member __.BeginTransaction(con) = con.BeginTransaction()
