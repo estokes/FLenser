@@ -179,9 +179,15 @@ type Parameter =
     static member Int64: name:String -> parameter<int64>
     static member Float: name:String -> parameter<float>
     static member Bool: name:String -> parameter<bool>
-    static member ByteArray: name:String -> parameter<byte[]>
     static member DateTime: name:String -> parameter<DateTime>
     static member TimeSpan: name:String -> parameter<TimeSpan>
+    static member ByteArray: name:String -> parameter<byte[]>
+    static member StringArray: name:String -> parameter<String[]>
+    static member IntArray: name:String -> parameter<int[]>
+    static member Int64Array: name:String -> parameter<int64[]>
+    static member BoolArray: name:String -> parameter<bool[]>
+    static member DateTimeArray: name:String -> parameter<DateTime[]>
+    static member TimeSpanArray: name:String -> parameter<TimeSpan[]>
     static member OfLens: lens<'A> * ?paramNestingSep:String -> parameter<'A>
 
 [<Class>]

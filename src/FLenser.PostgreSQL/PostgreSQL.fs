@@ -33,8 +33,18 @@ let pgTypeAndName (typ: Type) =
     elif typ = typeof<int64> then (NpgsqlDbType.Bigint, "bigint")
     elif typ = typeof<String> then (NpgsqlDbType.Text, "text")
     elif typ = typeof<TimeSpan> then (NpgsqlDbType.Interval, "interval")
-    elif typ = typeof<byte> then (NpgsqlDbType.Bytea, "bytea")
+    elif typ = typeof<byte[]> then (NpgsqlDbType.Bytea, "bytea")
     elif typ = typeof<json> then (NpgsqlDbType.Jsonb, "jsonb")
+    elif typ = typeof<bool[]> then 
+        (NpgsqlDbType.Array ||| NpgsqlDbType.Boolean, "boolean[]")
+    elif typ = typeof<int[]> then
+        (NpgsqlDbType.Array ||| NpgsqlDbType.Integer, "integer[]")
+    elif typ = typeof<int64[]> then
+        (NpgsqlDbType.Array ||| NpgsqlDbType.Bigint, "bigint[]")
+    elif typ = typeof<String[]> then 
+        (NpgsqlDbType.Array ||| NpgsqlDbType.Text, "text[]")
+    elif typ = typeof<TimeSpan[]> then
+        (NpgsqlDbType.Array ||| NpgsqlDbType.Interval, "interval[]")
     else (NpgsqlDbType.Unknown, "")
 
 let pgTypeName typ = 
@@ -103,6 +113,27 @@ let create (csb: NpgsqlConnectionStringBuilder) =
                             | :? String as x -> w.Write<String>(x, NpgsqlDbType.Text)
                             | :? TimeSpan as x -> w.Write<TimeSpan>(x, NpgsqlDbType.Interval)
                             | :? array<byte> as x -> w.Write<byte[]>(x, NpgsqlDbType.Bytea)
+                            | :? array<bool> as x ->
+                                let t = NpgsqlDbType.Array ||| NpgsqlDbType.Boolean
+                                w.Write<bool[]>(x, t)
+                            | :? array<DateTime> as x ->
+                                let t = NpgsqlDbType.Array ||| NpgsqlDbType.Timestamp
+                                w.Write<DateTime[]>(x, t)
+                            | :? array<float> as x ->
+                                let t = NpgsqlDbType.Array ||| NpgsqlDbType.Double
+                                w.Write<float[]>(x, t)
+                            | :? array<int32> as x ->
+                                let t = NpgsqlDbType.Array ||| NpgsqlDbType.Integer
+                                w.Write<int32[]>(x, t)
+                            | :? array<int64> as x ->
+                                let t = NpgsqlDbType.Array ||| NpgsqlDbType.Bigint
+                                w.Write<int64[]>(x, t)
+                            | :? array<String> as x ->
+                                let t = NpgsqlDbType.Array ||| NpgsqlDbType.Text
+                                w.Write<String[]>(x, t)
+                            | :? array<TimeSpan> as x ->
+                                let t = NpgsqlDbType.Array ||| NpgsqlDbType.Interval
+                                w.Write<TimeSpan[]>(x, t)
                             | :? json as x -> w.Write(x.Data, NpgsqlDbType.Jsonb)
                             | x -> w.Write(x, NpgsqlDbType.Unknown))
                 
