@@ -139,6 +139,16 @@ type CreateSubLensAttribute =
     new: unit -> CreateSubLensAttribute
 
 [<Class>]
+type FlattenAttribute =
+    inherit Attribute
+    new: unit -> FlattenAttribute
+
+[<Class>]
+type RenameAttribute =
+    inherit Attribute
+    new: columnName:String -> RenameAttribute
+
+[<Class>]
 type Lens =
     // Create a lens for type A
     static member Create : ?virtualDbFields:Map<list<String>,virtualDbField> 

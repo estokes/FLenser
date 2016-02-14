@@ -238,6 +238,16 @@ open Utils
 
 type CreateSubLensAttribute() = inherit Attribute()
 
+[<AllowNullLiteralAttribute>]
+type FlattenAttribute(?prefix) = 
+    inherit Attribute()
+    member __.Prefix with get() = defaultArg prefix ""
+
+[<AllowNullLiteralAttribute>]
+type RenameAttribute(columnName: String) = 
+    inherit Attribute()
+    member __.ColumnName with get() = columnName
+
 type Lens =
     static member NonQuery with get() = NonQueryLens
     static member Create<'A>(?virtualDbFields: Map<list<String>, virtualDbField>,
@@ -369,7 +379,14 @@ type Lens =
             let injectAndProject = fields |> Array.map (fun fld ->
                 let readFld = FSharpValue.PreComputeRecordFieldReader fld
                 let reader o = readFld (reader o)
-                let name = prefix @ [fld.Name]
+                let name =
+                    let name =
+                        match fld.GetCustomAttribute<RenameAttribute>() with
+                        | null -> fld.Name
+                        | a -> a.ColumnName
+                    match fld.GetCustomAttribute<FlattenAttribute>() with
+                    | null -> prefix @ [name]
+                    | a -> [a.Prefix + name]
                 let typ = fld.PropertyType
                 match Map.tryFind name virtualDbFields with
                 | Some (prefix, name, project) -> (fun _ _ _ -> ()), project prefix name
@@ -396,6 +413,12 @@ type Lens =
             let mutable clearPrecomputedCache = []
             let case (c: UnionCaseInfo) =
                 let fields = c.GetFields ()
+                let casename = 
+                    c.GetCustomAttributes()
+                    |> Seq.tryPick (function
+                        | :? RenameAttribute as a -> Some a.ColumnName
+                        | _ -> None)
+                    |> Option.getOrElse c.Name
                 let injectAndProject =
                     if fields = [||] then [||]
                     else
@@ -406,7 +429,14 @@ type Lens =
                         fields |> Array.mapi (fun i fld ->
                             let reader o = readFld (reader o) i
                             let typ = fld.PropertyType
-                            let name = prefix @ [c.Name; fld.Name]
+                            let name =
+                                match fld.GetCustomAttribute<FlattenAttribute>() with
+                                | null ->
+                                    if fields.Length = 1 
+                                       && (isRecord typ || isTuple typ || isUnion typ) then
+                                       [casename]
+                                    else [casename; fld.Name]
+                                | a -> [a.Prefix]
                             match Map.tryFind name virtualDbFields with
                             | Some (prefix, name, project) -> 
                                 (fun _ _ _ -> ()), project prefix name
@@ -418,7 +448,7 @@ type Lens =
                                         primitives.[typ.GenericTypeArguments.[0]]
                                         typ name
                                 elif not (isRecursive typ) 
-                                     && (isRecord typ || isTuple typ || isUnion typ) then
+                                     && (isRecord typ || isTuple typ || isUnion typ) then 
                                     subLens typ reader name
                                 else json typ reader name)
                 let inject cols sidx case =
