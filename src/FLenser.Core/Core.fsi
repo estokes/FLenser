@@ -145,7 +145,8 @@ type CreateSubLensAttribute =
 [<Class>]
 type FlattenAttribute =
     inherit Attribute
-    new: ?prefix:String -> FlattenAttribute
+    new: unit -> FlattenAttribute
+    member Prefix: String with get, set
 
 (* Rename may be applied to record fields and union cases. it causes the database column to
    be called something different than the field/case name. *)

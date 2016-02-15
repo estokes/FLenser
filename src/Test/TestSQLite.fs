@@ -35,13 +35,14 @@ module T1 =
           zab: Set<int> }
 
     type z =
-        | A of a
-        | B of b
+        | [<Flatten>] A of a
+        | [<Flatten>] B of b
         | C
         | D
 
     type t = 
-        { item: String
+        { [<Rename("renamedItem")>] 
+          item: String
           id: int64
           thing: z }
 
@@ -62,11 +63,11 @@ module T1 =
         {item = "zeltch"; id = 3L; thing = D}]
 
     let byItem = 
-        Query.Create("select * from foo where item = :p1", 
+        Query.Create("select * from foo where renamedItem = :p1", 
             lens, Parameter.String("p1"))
 
     let changeBar = 
-        Query.Create("update foo set thing$a$item$bar = :p1 where id = :p2", 
+        Query.Create("update foo set bar = :p1 where id = :p2", 
             Lens.NonQuery, Parameter.String("p1"), Parameter.Int64("p2"))
 
     let all = Query.Create("select * from foo", lens)
@@ -74,7 +75,7 @@ module T1 =
     let changeThing =
         let tl = Lens.Create<z>(prefix = ["thing"])
         let sql =
-            sprintf "update foo set %s where item = :p1"
+            sprintf "update foo set %s where renamedItem = :p1"
                 (String.Join(", ", 
                     tl.Columns |> Array.map (fun c -> c + " = :" + c.Replace("$", "_"))))
         Query.Create(sql, Lens.NonQuery, Parameter.String("p1"), Parameter.OfLens tl)

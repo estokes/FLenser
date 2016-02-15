@@ -239,9 +239,9 @@ open Utils
 type CreateSubLensAttribute() = inherit Attribute()
 
 [<AllowNullLiteralAttribute>]
-type FlattenAttribute(?prefix : String) = 
+type FlattenAttribute() =
     inherit Attribute()
-    member __.Prefix with get() = prefix 
+    member val Prefix = "" with get, set
     static member Usage =
         "The Flatten attribute may only be applied to record fields and union cases"
 
@@ -392,8 +392,8 @@ type Lens =
                     | null -> (false, prefix @ [name])
                     | a -> 
                         match a.Prefix with
-                        | None -> (true, [name])
-                        | Some pfx -> (true, pfx :: [name])
+                        | "" -> (true, [name])
+                        | pfx -> (true, pfx :: [name])
                 let typ = fld.PropertyType
                 match Map.tryFind name virtualDbFields with
                 | Some (prefix, name, project) -> (fun _ _ _ -> ()), project prefix name
@@ -456,10 +456,10 @@ type Lens =
                                 | None -> [casename; fld.Name]
                                 | Some a -> 
                                     match a.Prefix with 
-                                    | None when singletonRecord -> []
-                                    | None -> [fld.Name]
-                                    | Some p when singletonRecord -> [p]
-                                    | Some p -> [p; fld.Name]
+                                    | "" when singletonRecord -> []
+                                    | "" -> [fld.Name]
+                                    | p when singletonRecord -> [p]
+                                    | p -> [p; fld.Name]
                             match Map.tryFind name virtualDbFields with
                             | Some (prefix, name, project) -> 
                                 (fun _ _ _ -> ()), project prefix name
