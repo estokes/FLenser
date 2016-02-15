@@ -453,8 +453,8 @@ type Lens =
                                     fields.Length = 1 
                                     && (isRecord typ || isTuple typ || isUnion typ)
                                 match flatten with
-                                | None when singletonRecord -> [casename]
-                                | None -> [casename; fld.Name]
+                                | None when singletonRecord -> prefix @ [casename]
+                                | None -> prefix @ [casename; fld.Name]
                                 | Some a -> 
                                     match a.Prefix with 
                                     | "" when singletonRecord -> []
