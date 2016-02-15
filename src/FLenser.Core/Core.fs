@@ -239,14 +239,18 @@ open Utils
 type CreateSubLensAttribute() = inherit Attribute()
 
 [<AllowNullLiteralAttribute>]
-type FlattenAttribute(?prefix) = 
+type FlattenAttribute(?prefix : String) = 
     inherit Attribute()
-    member __.Prefix with get() = defaultArg prefix ""
+    member __.Prefix with get() = prefix 
+    static member Usage =
+        "The Flatten attribute may only be applied to record fields and union cases"
 
 [<AllowNullLiteralAttribute>]
 type RenameAttribute(columnName: String) = 
     inherit Attribute()
     member __.ColumnName with get() = columnName
+    static member Usage =
+        "The Rename Attribute may only be applied to record fields and union cases"
 
 type Lens =
     static member NonQuery with get() = NonQueryLens
@@ -379,26 +383,35 @@ type Lens =
             let injectAndProject = fields |> Array.map (fun fld ->
                 let readFld = FSharpValue.PreComputeRecordFieldReader fld
                 let reader o = readFld (reader o)
-                let name =
+                let (flatten, name) =
                     let name =
                         match fld.GetCustomAttribute<RenameAttribute>() with
                         | null -> fld.Name
                         | a -> a.ColumnName
                     match fld.GetCustomAttribute<FlattenAttribute>() with
-                    | null -> prefix @ [name]
-                    | a -> [a.Prefix + name]
+                    | null -> (false, prefix @ [name])
+                    | a -> 
+                        match a.Prefix with
+                        | None -> (true, [name])
+                        | Some pfx -> (true, pfx :: [name])
                 let typ = fld.PropertyType
                 match Map.tryFind name virtualDbFields with
                 | Some (prefix, name, project) -> (fun _ _ _ -> ()), project prefix name
                 | None ->
                     if isPrim typ then
+                        if flatten then 
+                            failwith "primitive record fields may not be flattened"
                         prim reader primitives.[typ] name false typ
                     elif isPrimOption typ then
+                        if flatten then 
+                            failwith "primitive option record fields may not be flattened"
                         primOpt reader primitives.[typ.GenericTypeArguments.[0]]
                             typ name
                     elif not (isRecursive typ) && (isRecord typ || isTuple typ || isUnion typ) then 
                         subLens typ reader name
-                    else json typ reader name)
+                    else
+                        if flatten then failwith "json record fields may not be flattened"
+                        json typ reader name)
             let construct = FSharpValue.PreComputeRecordConstructor(typ, true)
             let inject cols startidx record = 
                 injectAndProject |> Array.iter (fun (inj, _) -> inj cols startidx record)
@@ -419,6 +432,11 @@ type Lens =
                         | :? RenameAttribute as a -> Some a.ColumnName
                         | _ -> None)
                     |> Option.getOrElse c.Name
+                let flatten = 
+                    c.GetCustomAttributes()
+                    |> Seq.tryPick (function
+                        | :? FlattenAttribute as a -> Some a
+                        | _ -> None)
                 let injectAndProject =
                     if fields = [||] then [||]
                     else
@@ -430,13 +448,18 @@ type Lens =
                             let reader o = readFld (reader o) i
                             let typ = fld.PropertyType
                             let name =
-                                match fld.GetCustomAttribute<FlattenAttribute>() with
-                                | null ->
-                                    if fields.Length = 1 
-                                       && (isRecord typ || isTuple typ || isUnion typ) then
-                                       [casename]
-                                    else [casename; fld.Name]
-                                | a -> [a.Prefix]
+                                let singletonRecord =
+                                    fields.Length = 1 
+                                    && (isRecord typ || isTuple typ || isUnion typ)
+                                match flatten with
+                                | None when singletonRecord -> [casename]
+                                | None -> [casename; fld.Name]
+                                | Some a -> 
+                                    match a.Prefix with 
+                                    | None when singletonRecord -> []
+                                    | None -> [fld.Name]
+                                    | Some p when singletonRecord -> [p]
+                                    | Some p -> [p; fld.Name]
                             match Map.tryFind name virtualDbFields with
                             | Some (prefix, name, project) -> 
                                 (fun _ _ _ -> ()), project prefix name
@@ -499,6 +522,12 @@ type Lens =
                 construct a
             (inject, project)
         and createInjectProject (typ: Type) (reader: obj -> obj) prefix =
+            match typ.GetCustomAttribute<FlattenAttribute>() with
+            | null -> ()
+            | _ -> failwith FlattenAttribute.Usage
+            match typ.GetCustomAttribute<RenameAttribute>() with
+            | null -> ()
+            | _ -> failwith RenameAttribute.Usage
             let singletonPrefix = if prefix <> [] then prefix else ["Item"]
             if not (isRecursive typ) && isPrim typ then
                 prim reader primitives.[typ] singletonPrefix false typ

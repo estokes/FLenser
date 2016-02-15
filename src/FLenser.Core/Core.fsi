@@ -138,11 +138,17 @@ type CreateSubLensAttribute =
     inherit Attribute
     new: unit -> CreateSubLensAttribute
 
+(* Flatten may be applied to non primitive record fields, and union cases. It causes the
+   prefix to be replaced with the optional prefix argument (default is nothing). It's effect
+   is to flatten the namespace in a nested type, hoisting children of the field up to the same
+   level as the field itself. Flatten and rename may not be used together. *)
 [<Class>]
 type FlattenAttribute =
     inherit Attribute
-    new: unit -> FlattenAttribute
+    new: ?prefix:String -> FlattenAttribute
 
+(* Rename may be applied to record fields and union cases. it causes the database column to
+   be called something different than the field/case name. *)
 [<Class>]
 type RenameAttribute =
     inherit Attribute
