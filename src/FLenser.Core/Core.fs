@@ -392,8 +392,8 @@ type Lens =
                     | null -> (false, prefix @ [name])
                     | a -> 
                         match a.Prefix with
-                        | "" -> (true, [name])
-                        | pfx -> (true, pfx :: [name])
+                        | "" -> (true, [])
+                        | pfx -> (true, [pfx])
                 let typ = fld.PropertyType
                 match Map.tryFind name virtualDbFields with
                 | Some (prefix, name, project) -> (fun _ _ _ -> ()), project prefix name
