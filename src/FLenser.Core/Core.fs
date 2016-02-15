@@ -283,9 +283,7 @@ type Lens =
         let vdf = 
             virtualTypeFields 
             |> Map.map (fun k v ->
-                let typ = 
-                    v.GetType().GetMethod("Invoke").GetParameters().[0].ParameterType
-                let (_, id) = createColumnSlot (prefix @ k) typ
+                let (_, id) = createColumnSlot (prefix @ k) typeof<obj>
                 id, v)
         let prim (inject: obj -> obj) 
             (project: DbDataReader -> String -> obj)
