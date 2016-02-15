@@ -539,6 +539,8 @@ type Lens =
             elif not (isRecursive typ) && isTuple typ then tuple typ reader prefix
             else json typ reader prefix
         let (inject, project) = createInjectProject typ id prefix
+        if Seq.distinct columns <> (columns :> seq<String>) then
+            failwith (sprintf "FLenser naming conflict %s" (String.Join(", ", columns)))
         lens<'A>(columns.ToArray(), types.ToArray(), paths.ToArray(),
             (fun cols startidx t -> 
                 inject cols startidx (box t)
