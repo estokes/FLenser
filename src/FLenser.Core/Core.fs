@@ -35,6 +35,7 @@ type json internal (data: String) =
 
 type internal rawLens = 
     abstract member Columns: String[] with get
+    abstract member Types: Type[] with get
     abstract member InjectRaw: obj[] * int * obj -> unit
     abstract member ProjectRaw: DbDataReader -> obj
 
@@ -50,6 +51,7 @@ type lens<'A> internal (columns: String[], types: Type[], paths: array<list<Stri
     member internal __.Project(r) = project r
     interface rawLens with
         member __.Columns with get() = columns
+        member __.Types with get() = types
         member o.InjectRaw(target: obj[], startidx: int, v : obj) =
            o.Inject(target, startidx, v :?> 'A)
         member o.ProjectRaw(r) = box (project r)
@@ -370,6 +372,7 @@ type Lens =
                         let lens = mi.Invoke(null, [|(Some prefix) :> obj|]) :?> rawLens
                         let startidx = columns.Count
                         columns.AddRange lens.Columns
+                        types.AddRange lens.Types
                         ((fun a startidx' o -> lens.InjectRaw(a, startidx + startidx', reader o)), 
                          lens.ProjectRaw)
                     else failwith 
