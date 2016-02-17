@@ -621,13 +621,11 @@ type Parameter =
     static member Bool(name) = Parameter.Create<bool>(name)
     static member DateTime(name) = Parameter.Create<DateTime>(name)
     static member TimeSpan(name) = Parameter.Create<TimeSpan>(name)
-    static member ByteArray(name) = Parameter.Create<byte[]>(name)
-    static member StringArray(name) = Parameter.Create<String[]>(name)
-    static member IntArray(name) = Parameter.Create<int[]>(name)
-    static member Int64Array(name) = Parameter.Create<int64[]>(name)
-    static member BoolArray(name) = Parameter.Create<bool[]>(name)
-    static member DateTimeArray(name) = Parameter.Create<DateTime[]>(name)
-    static member TimeSpanArray(name) = Parameter.Create<TimeSpan[]>(name)
+    static member Array(p: parameter<'A>) =
+        match p with
+        | Single (name, _) -> Parameter.Create<'A[]>(name)
+        | FromLens _ -> 
+            failwith "Parameter.Create cannot create an array parameter from an OfLens"
     static member OfLens(lens: lens<'A>, ?paramNestingSep) : parameter<'A> =
         let pns = defaultArg paramNestingSep "_"
         let names = lens.Paths |> Array.map (fun p -> String.Join(pns, p))
