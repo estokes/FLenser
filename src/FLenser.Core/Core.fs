@@ -600,9 +600,11 @@ type parameter<'A> =
         match p with
         | Single (name, typ) -> [|name, typ|]
         | FromLens (l, names, _) -> Array.zip names l.Types
-    member p.Inject (c: DbParameterCollection) (v: 'A) (i: int) =
+    member p.Inject (c: DbParameterCollection) (v: 'A) (i: int) : int =
         match p with
-        | Single _ -> c.[i].Value <- v; i + 1
+        | Single _ -> 
+            c.[i].Value <- match box v with null -> box DBNull.Value | v -> v
+            i + 1
         | FromLens (l, _, vals) -> 
             l.Inject(vals, 0, v)
             vals |> Array.iteri (fun j v -> 
