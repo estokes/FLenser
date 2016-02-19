@@ -610,6 +610,7 @@ type parameter<'A> =
             c.[i].Value <- map (box v)
             i + 1
         | FromLens (l, _, vals) -> 
+            Array.Clear(vals, 0, vals.Length)
             l.Inject(vals, 0, v)
             vals |> Array.iteri (fun j v -> c.[i + j].Value <- map v)
             i + vals.Length
