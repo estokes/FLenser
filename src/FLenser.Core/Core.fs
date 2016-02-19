@@ -30,8 +30,7 @@ exception UnexpectedNull
 type virtualTypeField<'A> = 'A -> obj
 type virtualDbField = String -> String -> DbDataReader -> obj
 
-type json internal (data: String) =
-    member __.Data with get() = data
+type json internal (data: String) = member __.Data with get() = data
 
 type internal rawLens = 
     abstract member Columns: String[] with get
@@ -601,14 +600,18 @@ type parameter<'A> =
         | Single (name, typ) -> [|name, typ|]
         | FromLens (l, names, _) -> Array.zip names l.Types
     member p.Inject (c: DbParameterCollection) (v: 'A) (i: int) : int =
+        let map (v: obj) =
+            match v with
+            | null -> box DBNull.Value
+            | :? json as x -> box x.Data
+            | _ -> v
         match p with
         | Single _ -> 
-            c.[i].Value <- match box v with null -> box DBNull.Value | v -> v
+            c.[i].Value <- map (box v)
             i + 1
         | FromLens (l, _, vals) -> 
             l.Inject(vals, 0, v)
-            vals |> Array.iteri (fun j v -> 
-                c.[i + j].Value <- match v with null -> box DBNull.Value | v -> v)
+            vals |> Array.iteri (fun j v -> c.[i + j].Value <- map v)
             i + vals.Length
 
 type Parameter =
