@@ -73,11 +73,13 @@ module T1 =
     let all = Query.Create("select * from foo", lens)
 
     let changeThing =
-        let tl = Lens.Create<z>(prefix = ["thing"])
+        let tl = Lens.Create<z>()
         let sql =
             sprintf "update foo set %s where renamedItem = :p1"
-                (String.Join(", ", 
-                    tl.Columns |> Array.map (fun c -> c + " = :" + c.Replace("$", "_"))))
+                (String.concat ", "
+                    (tl.Columns |> Array.map (fun c -> 
+                        let n = if c = "z" then "thing" else c
+                        n + " = :" + c)))
         Query.Create(sql, Lens.NonQuery, Parameter.String("p1"), Parameter.OfLens tl)
 
     let runtests (db: Async.db) = async {
@@ -122,7 +124,7 @@ module T2 =
 
     let init =
         let cols = 
-            Array.append lens.Columns [|"thing$id integer primary key autoincrement"|]
+            Array.append lens.Columns [|"thingid integer primary key autoincrement"|]
             |> fun a -> String.Join(", ", a)
         Query.Create(sprintf "create table bar (%s)" cols, Lens.NonQuery)
 
@@ -131,7 +133,7 @@ module T2 =
          {a = 42; b = 42.2324; c = "baz"; thing = {id = 2L; x = "rab"; testing = false}}]
 
     let byCat = 
-        Query.Create("select * from bar where thing$cat = :p", lens, Parameter.String("p"))
+        Query.Create("select * from bar where thingcat = :p", lens, Parameter.String("p"))
 
     let runtests (db: Async.db) = async {
         let! i3 = db.Query(byCat, "foofoo")
@@ -169,7 +171,7 @@ module T3 =
             Lens.Create<String>(prefix = ["item1"]))
 
     let joined = 
-        Query.Create("select * from foo left outer join bar on foo.id = bar.thing$id", 
+        Query.Create("select * from foo left outer join bar on foo.id = bar.thingid", 
             Lens.Tuple(T1.lens, Lens.Optional(T2.lens)))
 
     let runtests (db: Async.db) = async {
