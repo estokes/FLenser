@@ -253,13 +253,27 @@ type RenameAttribute(columnName: String) =
     static member Usage =
         "The Rename Attribute may only be applied to record fields and union cases"
 
-type Lens =
+type Lens private () =
+    static let toplevelPrefixByThread = Dictionary<int, list<String>>()
     static member NonQuery with get() = NonQueryLens
     static member Create<'A>(?virtualDbFields: Map<list<String>, virtualDbField>,
                              ?virtualTypeFields: Map<list<String>, virtualTypeField<'A>>,
                              ?prefix, ?nestingSeparator) : lens<'A> =
         let prefix = defaultArg prefix []
-        let sep = defaultArg nestingSeparator "$"
+        let toplevelPrefix =
+            (* To handle the flatten attribute properly we need to know what prefix was
+               passed into the root lens. To be thread safe we store this value indexed
+               by thread id. *)
+            lock toplevelPrefixByThread (fun () ->
+                let id = System.Threading.Thread.CurrentThread.ManagedThreadId
+                match toplevelPrefixByThread.TryFind id with
+                | None ->
+                    // we are the root lens, record the prefix, remove it
+                    // when we are done building the lens
+                    toplevelPrefixByThread.[id] <- prefix
+                    prefix
+                | Some pfx -> pfx)
+        let sep = defaultArg nestingSeparator ""
         let stringifypath (path: list<String>) = String.Join(sep, path)
         let virtualDbFields = 
             defaultArg virtualDbFields Map.empty
@@ -392,8 +406,8 @@ type Lens =
                     | null -> (false, prefix @ [name])
                     | a -> 
                         match a.Prefix with
-                        | "" -> (true, [])
-                        | pfx -> (true, [pfx])
+                        | "" -> (true, toplevelPrefix)
+                        | pfx -> (true, toplevelPrefix @ [pfx])
                 let typ = fld.PropertyType
                 match Map.tryFind name virtualDbFields with
                 | Some (prefix, name, project) -> (fun _ _ _ -> ()), project prefix name
@@ -456,10 +470,10 @@ type Lens =
                                 | None -> prefix @ [casename; fld.Name]
                                 | Some a -> 
                                     match a.Prefix with 
-                                    | "" when singletonRecord -> []
-                                    | "" -> [fld.Name]
-                                    | p when singletonRecord -> [p]
-                                    | p -> [p; fld.Name]
+                                    | "" when singletonRecord -> toplevelPrefix
+                                    | "" -> toplevelPrefix @ [fld.Name]
+                                    | p when singletonRecord -> toplevelPrefix @ [p]
+                                    | p -> toplevelPrefix @ [p; fld.Name]
                             match Map.tryFind name virtualDbFields with
                             | Some (prefix, name, project) -> 
                                 (fun _ _ _ -> ()), project prefix name
@@ -542,6 +556,12 @@ type Lens =
         let cols = columns.ToArray()
         if Array.distinct cols <> cols then
             failwith (sprintf "FLenser naming conflict %s" (String.Join(", ", cols)))
+        lock toplevelPrefixByThread (fun () ->
+            let id = System.Threading.Thread.CurrentThread.ManagedThreadId
+            match toplevelPrefixByThread.TryFind id with
+            | None -> failwith (sprintf "bug no toplevel prefix found for tid %d" id)
+            | Some pfx when pfx = prefix -> toplevelPrefixByThread.Remove id |> ignore
+            | Some _ -> ())
         lens<'A>(cols, types.ToArray(), paths.ToArray(),
             (fun cols startidx t -> 
                 inject cols startidx (box t)
@@ -630,9 +650,10 @@ type Parameter =
         | Single (name, _) -> Parameter.Create<'A[]>(name)
         | FromLens _ -> 
             failwith "Parameter.Create cannot create an array parameter from an OfLens"
-    static member OfLens(lens: lens<'A>, ?paramNestingSep) : parameter<'A> =
-        let pns = defaultArg paramNestingSep "_"
-        let names = lens.Paths |> Array.map (fun p -> String.Join(pns, p))
+    static member OfLens(lens: lens<'A>, ?paramNestingSep, ?namePrefix) : parameter<'A> =
+        let pns = defaultArg paramNestingSep ""
+        let pfx = defaultArg namePrefix ""
+        let names = lens.Paths |> Array.map (fun p -> pfx + String.concat pns p)
         FromLens (lens, names, Array.create lens.Columns.Length null)
 
 type query<'A, 'B> internal (sql:String, lens:lens<'B>, pars: (String * Type)[],

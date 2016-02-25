@@ -200,7 +200,8 @@ type Parameter =
     static member TimeSpan: name:String -> parameter<TimeSpan>
     // This can't be used on OfLens paramaters
     static member Array: parameter<'A> -> parameter<'A[]>
-    static member OfLens: lens<'A> * ?paramNestingSep:String -> parameter<'A>
+    static member OfLens: lens<'A> * ?paramNestingSep:String * ?namePrefix:String 
+        -> parameter<'A>
 
 [<Class>]
 type query<'A, 'B> = 
