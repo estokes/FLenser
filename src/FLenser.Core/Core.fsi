@@ -296,6 +296,10 @@ module Async =
         // Execute a query, returning it's result
         abstract member Query: query<'A, 'B> * 'A -> Async<List<'B>>
 
+        // Execute a query expected to return 0 or 1 rows, if it returns
+        // more an exception will be raised.
+        abstract member QuerySingle: query<'A, 'B> * 'A -> Async<Option<'B>>
+
         // Execute a mutator, returning the number of rows altered
         abstract member NonQuery: query<'A, NonQuery> * 'A -> Async<int>
 
@@ -331,6 +335,7 @@ module Async =
 type db =
     inherit IDisposable
     abstract member Query: query<'A, 'B> * 'A -> List<'B>
+    abstract member QuerySingle: query<'A, 'B> * 'A -> Option<'B>
     abstract member NonQuery: query<'A, NonQuery> * 'A -> int
     abstract member Insert: table:String * lens<'A> * seq<'A> -> unit
     abstract member Transaction: (db -> 'a) -> 'a
