@@ -24,6 +24,8 @@
     <WarningLevel>3</WarningLevel>
     <DocumentationFile>bin\Debug\FLenser.XML</DocumentationFile>
     <NoWarn>50</NoWarn>
+    <StartAction>Program</StartAction>
+    <StartProgram>C:\Users\Eric\git\sposuite\spo\loadNewModel\bin\Debug\loadNewModel.exe</StartProgram>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
     <DebugType>pdbonly</DebugType>
