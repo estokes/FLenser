@@ -139,9 +139,10 @@ type CreateSubLensAttribute =
     new: unit -> CreateSubLensAttribute
 
 (* Flatten may be applied to non primitive record fields, and union cases. It causes the
-   prefix to be replaced with the optional prefix argument (default is nothing). It's effect
-   is to flatten the namespace in a nested type, hoisting children of the field up to the same
-   level as the field itself. Flatten and rename may not be used together. *)
+   prefix to be replaced with the prefix of the root lens (if specified) prepended to the optional 
+   prefix argument (if specified). It's effect is to flatten the namespace in a nested type, hoisting 
+   children of the field up to the same level as the field itself. Flatten and rename may not be used 
+   together. *)
 [<Class>]
 type FlattenAttribute =
     inherit Attribute
