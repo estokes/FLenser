@@ -15,6 +15,11 @@ as a package for each database provider, e.g. FLenser.PostgreSQL.
 
 ## Recent Changes
 
+1.4.11 
+* Default nesting separator changed to "" for parameters and lenses
+* Parameter.OfLens now allows specifying a prefix
+* Behavior of Flatten changed to respect the root prefix
+
 1.4
 * Lenses may now be used as parameters, which for one greatly simplifies large update
 statements, and also opens up many structured query possibilities.
