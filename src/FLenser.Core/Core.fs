@@ -799,10 +799,10 @@ module Async =
         abstract member Transaction: (db -> Async<'a>) -> Async<'a>
         abstract member NoRetry: (db -> Async<'A>) -> Async<'A>
 
-    let toOpt (l: List<'A>) : Option<'A> =
+    let toOpt (q: query<_,_>) (l: List<'A>) : Option<'A> =
         if l.Count = 0 then None
         elif l.Count = 1 then Some l.[0]
-        else failwith "expected 0 or 1 result"
+        else failwith (sprintf "expected 0 or 1 result from query %s" q.Sql)
 
     let getCmd (prepared: Dictionary<Guid, DbCommand>) 
         (con: #DbConnection) (provider: Provider<_,_,_>) (q: query<_,_>)= 
@@ -898,7 +898,7 @@ module Async =
                     q.Set (cmd.Parameters, a)
                     let! r = cmd.ExecuteReaderAsync() |> Async.AwaitTask
                     return! read q.Lens r })
-                member db.QuerySingle(q, a) = db.Query(q, a) |> Async.map toOpt
+                member db.QuerySingle(q, a) = db.Query(q, a) |> Async.map (toOpt q)
                 member __.Insert(table, lens: lens<'A>, ts: seq<'A>) = 
                     seq.Enqueue(async {
                         let (o, pi) = 
@@ -985,7 +985,7 @@ module Async =
                     dispose () 
                 member __.NonQuery(q, a) = withDb (fun db -> db.NonQuery(q, a))
                 member __.Query(q, a) = withDb (fun db -> db.Query(q, a))
-                member db.QuerySingle(q, a) = db.Query(q, a) |> Async.map toOpt
+                member db.QuerySingle(q, a) = db.Query(q, a) |> Async.map (toOpt q)
                 member __.Insert(t, l, a) = withDb (fun db -> db.Insert(t, l, a))
                 member __.Transaction(f) = withDb (fun db -> db.Transaction f) } }
 
@@ -1027,7 +1027,7 @@ type Db internal () =
                 q.Set (cmd.Parameters, a)
                 let r = cmd.ExecuteReader()
                 read q.Lens r)
-            member db.QuerySingle(q, a) = db.Query(q, a) |> Async.toOpt
+            member db.QuerySingle(q, a) = db.Query(q, a) |> Async.toOpt q
             member __.Insert(table, lens: lens<'A>, a: seq<'A>) = 
                 let (o, pi) = Async.prepareInsert lens preparedInserts provider table con
                 if not <| Seq.isEmpty a then
