@@ -818,7 +818,9 @@ module Async =
             cmd.Connection <- con
             cmd.CommandText <- q.Sql 
             cmd.Parameters.AddRange pars
-            cmd.Prepare ()
+            try cmd.Prepare ()
+            with exn -> 
+                failwith (sprintf "error preparing stmt %s error %A" cmd.CommandText exn)
             prepared.[q.Guid] <- cmd
             q.PushDispose (fun () -> ignore (prepared.Remove q.Guid))
             cmd
