@@ -190,6 +190,31 @@ module T3 =
             if name <> name' then failwith (sprintf "5: %A" name))
             i8 items }
 
+module T4 =
+    open FSharp.Data.UnitSystems.SI.UnitSymbols
+    let kg : float -> float<kg> = LanguagePrimitives.FloatWithMeasure
+    let m : float -> float<m> = LanguagePrimitives.FloatWithMeasure
+
+    type t = { x: float<kg>; y: float<m> }
+
+    let lens = Lens.Create<t>()
+
+    let init =
+        let cols = String.Join(", ", lens.Columns)
+        Query.Create(sprintf "create table units (%s)" cols, Lens.NonQuery)
+
+    let items =
+        [ {x = kg 50.; y = m 1.6e-35 }
+          {x = kg 23.22; y = m 3e9 } ]
+
+    let all = Query.Create("select * from units order by rowid", lens)
+
+    let runtests (db: Async.db) = async {
+        let! r1 = db.Query(all, ())
+        Seq.iter2 (fun i1 i2 ->
+            if i1 <> i2 then failwith (sprintf "not equal %A %A" i1 i2)
+            printfn "%A" i1) r1 items }
+
 let cs = SQLiteConnectionStringBuilder("DataSource=:memory:")
 cs.JournalMode <- SQLiteJournalModeEnum.Off
 cs.CacheSize <- 0
@@ -200,10 +225,12 @@ let setupasync () = async {
     let! _ = db.NonQuery(T1.init, ())
     let! _ = db.NonQuery(T2.init, ())
     let! _ = db.NonQuery(T3.init, ())
+    let! _ = db.NonQuery(T4.init, ())
     do! db.Transaction (fun db -> async {
             do! db.Insert("foo", T1.lens, T1.items) 
             do! db.Insert("bar", T2.lens, T2.items)
-            do! db.Insert("loc", T3.lens, T3.items) })
+            do! db.Insert("loc", T3.lens, T3.items)
+            do! db.Insert("units", T4.lens, T4.items) })
     return db }
 
 let setup () = 
@@ -211,10 +238,12 @@ let setup () =
     db.NonQuery(T1.init, ()) |> ignore
     db.NonQuery(T2.init, ()) |> ignore
     db.NonQuery(T3.init, ()) |> ignore
+    db.NonQuery(T4.init, ()) |> ignore
     db.Transaction(fun db -> 
         db.Insert("foo", T1.lens, T1.items)
         db.Insert("bar", T2.lens, T2.items)
-        db.Insert("loc", T3.lens, T3.items))
+        db.Insert("loc", T3.lens, T3.items)
+        db.Insert("units", T4.lens, T4.items))
     db
 
 let testSpeed () = 
@@ -242,5 +271,6 @@ let main argv =
             do! T1.runtests db
             do! T2.runtests db
             do! T3.runtests db
+            do! T4.runtests db
         } |> Async.RunSynchronously
     0
