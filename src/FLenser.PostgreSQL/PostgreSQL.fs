@@ -56,8 +56,9 @@ let create (csb: NpgsqlConnectionStringBuilder) =
     let mutable savepoint = 0
     { new Provider<_,_,_> with
         member __.ConnectAsync() = async {
+            do! Async.SwitchToThreadPool()
             let con = new NpgsqlConnection(csb)
-            do! con.OpenAsync() |> Async.AwaitTask
+            con.Open() 
             return con }
 
         member __.Connect() =

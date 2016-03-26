@@ -4,27 +4,9 @@ open Npgsql
 open FLenser.Core
 open FLenser.Core.Async
 
-type agent = 
-    { id: int
-      firstName: String
-      lastName: String
-      companyName: String
-      email: String
-      phone: String }
-    [<CreateSubLens>]
-    static member Lens(?prefix) =
-        let pfx = defaultArg prefix []
-        let id : virtualDbField = 
-            fun prefix name r -> 
-                let ord = r.GetOrdinal name
-                box (r.GetInt32 ord)
-        Lens.Create<agent>(?prefix = prefix, 
-            virtualDbFields = Map.ofList [["id"], id])
-    static member Empty =
-        { id = 0; firstName = ""; lastName = ""; companyName = ""
-          email = ""; phone = "" }
+let go = Async.RunSynchronously
 
-let connect host db password =
+let connect host db user password =
     let args = NpgsqlConnectionStringBuilder()
     args.Host <- host 
     args.Port <- 5432
@@ -32,31 +14,33 @@ let connect host db password =
     args.TrustServerCertificate <- true
     args.Database <- db 
     args.CommandTimeout <- 1200
-    args.Username <- "estokes"
+    args.Username <- user
     args.Password <- password
     let provider = FLenser.PostgreSQL.Provider.create args
     Db.WithRetries(provider, log = (fun e -> printfn "exn %A" e), tries = 3)
-    |> Async.RunSynchronously
+    |> go
 
-let db = connect "host" "db" "password"
+let db = connect "host" "db" "user" "password"
 
-let lens = agent.Lens()
+type test = 
+    { id: int
+      key: String }
 
-let testAgent = 
-    { id = 0
-      firstName = "Test"
-      lastName = "Agent"
-      companyName = "Test Firm"
-      email = "test@testfirm.com"
-      phone = "5555555555" }
+let lens = Lens.Create<test>()
 
-let () = 
-    db.Insert("agents", lens, [testAgent])
-    |> Async.RunSynchronously
+let createTbl = 
+    let sql = "create table test(id integer, key text)"
+    Query.Create(sql, Lens.NonQuery)
 
-let allAgents = Query.Create("select * from agents", lens)
-let agents = db.Query(allAgents, ()) |> Async.RunSynchronously
+let add =
+    let sql = "insert into test (id, key) values (:id, :key)"
+    Query.Create(sql, Lens.NonQuery, Parameter.OfLens(lens))
 
-let removeAgent = 
-    Query.Create("delete from agents where id = :id", Lens.NonQuery,
-        Parameter.Int("id"))
+let delete = 
+    let sql = "delete from test where id = :id"
+    Query.Create(sql, Lens.NonQuery, Parameter.Int("id"))
+
+let find = 
+    let sql = "select * from test where id = :id"
+    Query.Create(sql, lens, Parameter.Int("id"))
+

@@ -59,35 +59,32 @@ type NonQuery = {nothing: unit}
 
 module Utils =
     open System.Threading
-    type Sequencer() =
-        let running = ref 0
-        let jobs = Queue<Async<Unit> * Async<Unit>>()
-        let rec loop () = async {
-            let job =
-                lock jobs (fun () -> 
-                    if jobs.Count > 0 then Some (jobs.Dequeue ())
-                    else 
-                        ignore (Interlocked.Decrement running)
-                        None)
-            match job with
-            | None -> ()
-            | Some (job, finished) ->
-                Async.Start job
-                do! finished
-                return! loop () }
-        member __.Enqueue(job : Async<'A>) : Async<'A> = async {
-            let res = AsyncResultCell()
-            let job = async {
-                try
-                    let! z = job
-                    res.RegisterResult (AsyncOk z)
-                with e -> 
-                    return res.RegisterResult (AsyncException e) }
-            lock jobs (fun () ->
-                jobs.Enqueue(job, res.AsyncResult |> Async.Ignore)
-                if Interlocked.CompareExchange(running, 1, 0) = 0 then 
-                    Async.StartImmediate (loop ()))
-            return! res.AsyncResult }
+
+    type Sequencer () =
+        let finished = ref (AsyncResultCell ())
+        let locked = ref 0
+        let rec loop (f: unit -> Async<'a>) : Async<'a> =
+            lock finished (fun () -> 
+                if Interlocked.CompareExchange(locked, 1, 0) = 1 then
+                    let fin = !finished
+                    async {
+                        do! fin.AsyncResult
+                        return! loop f }
+                else
+                    let fin = AsyncResultCell()
+                    finished := fin
+                    async {
+                        let unlock () = 
+                            let (_: int) = Interlocked.Decrement(locked)
+                            fin.RegisterResult (AsyncOk (), reuseThread = true)
+                        try
+                            let! res = f ()
+                            unlock ()
+                            return res
+                        with e ->
+                            unlock ()
+                            return raise e })
+        member __.Enqueue(job: (unit -> Async<'A>)) : Async<'A> = loop job
 
     type Result<'A, 'B> =
         | Ok of 'A
@@ -879,12 +876,12 @@ module Async =
                     preparedInserts.Values |> Seq.iter (fun (_, p) -> p.Dispose ())
                     con.Dispose()
                 member db.NoRetry(f) = f db
-                member __.NonQuery(q, a) = seq.Enqueue (async {
+                member __.NonQuery(q, a) = seq.Enqueue (fun () -> async {
                     let cmd = getCmd prepared con provider q
                     q.Set (cmd.Parameters, a)
                     let! i = cmd.ExecuteNonQueryAsync() |> Async.AwaitTask
                     return i })
-                member __.Query(q, a) = seq.Enqueue (async {
+                member __.Query(q, a) = seq.Enqueue (fun () -> async {
                     let read (lens : lens<'B>) (r: DbDataReader) =
                         let l = List<'B>(capacity = 1)
                         let rec loop () = async {
@@ -902,7 +899,7 @@ module Async =
                     return! read q.Lens r })
                 member db.QuerySingle(q, a) = db.Query(q, a) |> Async.map (toOpt q)
                 member __.Insert(table, lens: lens<'A>, ts: seq<'A>) = 
-                    seq.Enqueue(async {
+                    seq.Enqueue(fun () -> async {
                         let (o, pi) = 
                             prepareInsert lens preparedInserts provider table con
                         if Seq.isEmpty ts then return ()
@@ -930,6 +927,8 @@ module Async =
             let mutable lastGoodDb : Option<db> = None
             let connect () = async {
                 let! con = Db.Connect(provider)
+                let q = Query.Create("select 1 as c", Lens.Create<int>(prefix = ["c"]))
+                let! _ = con.Query(q, ())
                 lastGoodDb <- Some con
                 return con }
             let mutable con : Result<db, exn> = Error (Failure "not connected")
@@ -942,7 +941,7 @@ module Async =
                     let! db = connect ()
                     con <- Ok db
                 with e -> con <- Error e }
-            let withDb f = seq.Enqueue (async {
+            let withDb f = seq.Enqueue (fun () -> async {
                 if disposed then failwith "error attempted to use disposed IDb"
                 let rec loop i = async {
                     match con with
@@ -972,7 +971,7 @@ module Async =
                 | Error e -> return raise e
                 | Ok _ -> () }
             // make sure if we can't connect we fail early
-            do! seq.Enqueue(loop 0)
+            do! seq.Enqueue(fun () -> loop 0)
             let getLastGoodDb () = 
                 match lastGoodDb with
                 | None -> failwith "bug withRetries returned without initializing"
