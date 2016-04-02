@@ -14,6 +14,9 @@ NuGet Packages are avaliable. There is a package for the core FLenser.Core, as w
 as a package for each database provider, e.g. FLenser.PostgreSQL.
 
 ## Recent Changes
+1.4.14
+* add the ability to compile (prepare) queries without executing them
+
 1.4.12 and 13
 * Just bug fixes
 
