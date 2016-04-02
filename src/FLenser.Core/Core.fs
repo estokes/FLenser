@@ -792,6 +792,7 @@ module Async =
         abstract member Query: query<'A, 'B> * 'A -> Async<List<'B>>
         abstract member QuerySingle: query<'A, 'B> * 'A -> Async<Option<'B>>
         abstract member NonQuery: query<'A, NonQuery> * 'A -> Async<int>
+        abstract member Compile: query<_, _> -> Async<unit>
         abstract member Insert: table:String * lens<'A> * seq<'A> -> Async<unit>
         abstract member Transaction: (db -> Async<'a>) -> Async<'a>
         abstract member NoRetry: (db -> Async<'A>) -> Async<'A>
@@ -898,6 +899,9 @@ module Async =
                     let! r = cmd.ExecuteReaderAsync() |> Async.AwaitTask
                     return! read q.Lens r })
                 member db.QuerySingle(q, a) = db.Query(q, a) |> Async.map (toOpt q)
+                member __.Compile(q) = seq.Enqueue (fun () ->
+                    let (_: DbCommand) = getCmd prepared con provider q
+                    Async.unit)
                 member __.Insert(table, lens: lens<'A>, ts: seq<'A>) = 
                     seq.Enqueue(fun () -> async {
                         let (o, pi) = 
@@ -986,6 +990,7 @@ module Async =
                     dispose () 
                 member __.NonQuery(q, a) = withDb (fun db -> db.NonQuery(q, a))
                 member __.Query(q, a) = withDb (fun db -> db.Query(q, a))
+                member __.Compile(q) = withDb (fun db -> db.Compile(q))
                 member db.QuerySingle(q, a) = db.Query(q, a) |> Async.map (toOpt q)
                 member __.Insert(t, l, a) = withDb (fun db -> db.Insert(t, l, a))
                 member __.Transaction(f) = withDb (fun db -> db.Transaction f) } }
@@ -994,6 +999,7 @@ type db =
     inherit IDisposable
     abstract member Query: query<'A, 'B> * 'A -> List<'B>
     abstract member QuerySingle: query<'A, 'B> * 'A -> Option<'B>
+    abstract member Compile: query<_, _> -> unit
     abstract member NonQuery: query<'A, NonQuery> * 'A -> int
     abstract member Insert: table:String * lens<'A> * seq<'A> -> unit
     abstract member Transaction: (db -> 'a) -> 'a
@@ -1028,6 +1034,8 @@ type Db internal () =
                 q.Set (cmd.Parameters, a)
                 let r = cmd.ExecuteReader()
                 read q.Lens r)
+            member __.Compile(q) = 
+                ignore (Async.getCmd prepared con provider q : DbCommand)
             member db.QuerySingle(q, a) = db.Query(q, a) |> Async.toOpt q
             member __.Insert(table, lens: lens<'A>, a: seq<'A>) = 
                 let (o, pi) = Async.prepareInsert lens preparedInserts provider table con

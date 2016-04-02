@@ -303,6 +303,14 @@ module Async =
         // Execute a mutator, returning the number of rows altered
         abstract member NonQuery: query<'A, NonQuery> * 'A -> Async<int>
 
+        // Prepare the query. This is optional, and if you don't call this
+        // the query will be prepared the first time you use it, and
+        // the prepared statement will be reused until the connection
+        // associated with it is terminated. However if you have a
+        // large library of queries you may want to check them for
+        // errors at startup time, or during development.
+        abstract member Compile: query<_, _> -> Async<unit>
+
         // insert the sequence of objects into the named table using the 
         // specified lens. Most providers implement this with a special db
         // specific bulk insertion mechanism. For example COPY in Postgresql.
@@ -337,6 +345,7 @@ type db =
     abstract member Query: query<'A, 'B> * 'A -> List<'B>
     abstract member QuerySingle: query<'A, 'B> * 'A -> Option<'B>
     abstract member NonQuery: query<'A, NonQuery> * 'A -> int
+    abstract member Compile: query<_, _> -> unit
     abstract member Insert: table:String * lens<'A> * seq<'A> -> unit
     abstract member Transaction: (db -> 'a) -> 'a
 
