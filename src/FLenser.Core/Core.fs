@@ -20,8 +20,8 @@ open System.Collections.Generic
 open System.Data.Common
 open FSharpx
 open FSharpx.Control
-open Nessos.FsPickler
-open Nessos.FsPickler.Json
+open MBrace.FsPickler
+open MBrace.FsPickler.Json
 open Microsoft.FSharp.Reflection
 open System.Reflection
 
