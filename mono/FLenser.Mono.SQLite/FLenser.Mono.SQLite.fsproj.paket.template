@@ -3,3 +3,5 @@ licenseUrl http://www.gnu.org/licenses/lgpl.html
 projectUrl https://github.com/estokes/FLenser
 DESCRIPTION
     A light object relational mapper for F# record types. Mono SQLite provider.
+Authors
+    Eric Stokes
