@@ -20,6 +20,7 @@ open System.Collections.Generic
 open System.Data.Common
 open FSharpx
 open FSharpx.Control
+open FSharp.Control
 open MBrace.FsPickler
 open MBrace.FsPickler.Json
 open Microsoft.FSharp.Reflection
@@ -418,7 +419,8 @@ type Lens private () =
                             failwith "primitive option record fields may not be flattened"
                         primOpt reader primitives.[typ.GenericTypeArguments.[0]]
                             typ name
-                    elif not (isRecursive typ) && (isRecord typ || isTuple typ || isUnion typ) then 
+                    elif not (isRecursive typ) &&
+                         (isRecord typ || isTuple typ || isUnion typ) then 
                         subLens typ reader name
                     else
                         if flatten then failwith "json record fields may not be flattened"
@@ -789,17 +791,18 @@ type Provider<'CON, 'PAR, 'TXN
 module Async =
     type db =
         inherit IDisposable
-        abstract member Query: query<'A, 'B> * 'A -> Async<List<'B>>
+        abstract member Query: query<'A, 'B> * 'A -> Async<AsyncSeq<'B>>
         abstract member QuerySingle: query<'A, 'B> * 'A -> Async<Option<'B>>
+        abstract member CancelQuery: unit -> Async<unit>
         abstract member NonQuery: query<'A, NonQuery> * 'A -> Async<int>
         abstract member Compile: query<_, _> -> Async<unit>
         abstract member Insert: table:String * lens<'A> * seq<'A> -> Async<unit>
         abstract member Transaction: (db -> Async<'a>) -> Async<'a>
         abstract member NoRetry: (db -> Async<'A>) -> Async<'A>
 
-    let toOpt (q: query<_,_>) (l: List<'A>) : Option<'A> =
-        if l.Count = 0 then None
-        elif l.Count = 1 then Some l.[0]
+    let toOpt (q: query<_,_>) (l: 'A[]) : Option<'A> =
+        if l.Length = 0 then None
+        elif l.Length = 1 then Some l.[0]
         else failwith (sprintf "expected 0 or 1 result from query %s" q.Sql)
 
     let getCmd (prepared: Dictionary<Guid, DbCommand>) 
@@ -872,6 +875,7 @@ module Async =
             let preparedInserts = Dictionary<Guid, obj[] * PreparedInsert>()
             let txn : ref<Option<'TXN>> = ref None
             let savepoints = Stack<String>()
+            let currentQuery : ref<Option<DbDataReader * String>> = ref None
             return { new db with
                 member __.Dispose() = 
                     preparedInserts.Values |> Seq.iter (fun (_, p) -> p.Dispose ())
@@ -884,21 +888,32 @@ module Async =
                     return i })
                 member __.Query(q, a) = seq.Enqueue (fun () -> async {
                     let read (lens : lens<'B>) (r: DbDataReader) =
-                        let l = List<'B>(capacity = 1)
-                        let rec loop () = async {
+                        let rec loop () = asyncSeq {
                             let! res = r.ReadAsync() |> Async.AwaitTask
                             if not res then
                                 if not r.IsClosed then r.Close ()
-                                return l
+                                currentQuery := None
                             else
-                                l.Add (lens.Project r)
-                                return! loop () }
+                                yield lens.Project r
+                                yield! loop () }
                         loop ()
+                    match !currentQuery with
+                    | None -> ()
+                    | Some (_, q) -> failwithf "A Query is already in progress (%s)" q
                     let cmd = getCmd prepared con provider q
                     q.Set (cmd.Parameters, a)
                     let! r = cmd.ExecuteReaderAsync() |> Async.AwaitTask
-                    return! read q.Lens r })
-                member db.QuerySingle(q, a) = db.Query(q, a) |> Async.map (toOpt q)
+                    currentQuery := Some (r, q.Sql)
+                    return read q.Lens r })
+                member db.QuerySingle(q, a) = async {
+                    let! res = db.Query(q, a)
+                    let! res = AsyncSeq.toArrayAsync res
+                    return toOpt q res }
+                member __.CancelQuery() = 
+                    match !currentQuery with
+                    | None -> ()
+                    | Some (r, _) -> try r.Close() with _ -> ()
+                    Async.unit
                 member __.Compile(q) = seq.Enqueue (fun () ->
                     let (_: DbCommand) = getCmd prepared con provider q
                     Async.unit)
@@ -920,6 +935,7 @@ module Async =
                     let (rollback, commit) = buildTxn txn provider savepoints con
                     try
                         let! res = f db
+                        db.CancelQuery()
                         commit ()
                         return res
                     with e -> rollback (); return raise e } } }
@@ -991,14 +1007,20 @@ module Async =
                 member __.NonQuery(q, a) = withDb (fun db -> db.NonQuery(q, a))
                 member __.Query(q, a) = withDb (fun db -> db.Query(q, a))
                 member __.Compile(q) = withDb (fun db -> db.Compile(q))
-                member db.QuerySingle(q, a) = db.Query(q, a) |> Async.map (toOpt q)
+                member db.QuerySingle(q, a) = async {
+                    // don't retry if toOpt fails due to more than one result
+                    let! res = db.Query(q, a)
+                    let! res = AsyncSeq.toArrayAsync res
+                    return toOpt q res }
+                member __.CancelQuery() = withDb (fun db -> db.CancelQuery())
                 member __.Insert(t, l, a) = withDb (fun db -> db.Insert(t, l, a))
                 member __.Transaction(f) = withDb (fun db -> db.Transaction f) } }
 
 type db =
     inherit IDisposable
-    abstract member Query: query<'A, 'B> * 'A -> List<'B>
+    abstract member Query: query<'A, 'B> * 'A -> seq<'B>
     abstract member QuerySingle: query<'A, 'B> * 'A -> Option<'B>
+    abstract member CancelQuery: unit -> unit
     abstract member Compile: query<_, _> -> unit
     abstract member NonQuery: query<'A, NonQuery> * 'A -> int
     abstract member Insert: table:String * lens<'A> * seq<'A> -> unit
@@ -1011,6 +1033,7 @@ type Db internal () =
         let preparedInserts = Dictionary<Guid, obj[] * PreparedInsert>()
         let txn : ref<Option<'TXN>> = ref None
         let savepoints = Stack<String>()
+        let currentQuery : ref<Option<DbDataReader * String>> = ref None
         { new db with
             member __.Dispose() =
                 preparedInserts.Values |> Seq.iter (fun (_, p) -> p.Dispose ())
@@ -1021,22 +1044,29 @@ type Db internal () =
                 cmd.ExecuteNonQuery())
             member __.Query(q, a) = lock con (fun () -> 
                 let read (lens : lens<'B>) (r: DbDataReader) =
-                    let l = List<'B>(capacity = 1)
-                    let rec loop () =
+                    let rec loop () = seq {
                         if not (r.Read ()) then
                             if not r.IsClosed then r.Close ()
-                            l
+                            currentQuery := None
                         else
-                            l.Add (lens.Project r)
-                            loop ()
+                            yield lens.Project r
+                            yield! loop () }
                     loop ()
+                match !currentQuery with
+                | None -> ()
+                | Some (_, q) -> failwithf "a Query is already in progress (%s)" q
                 let cmd = Async.getCmd prepared con provider q
                 q.Set (cmd.Parameters, a)
                 let r = cmd.ExecuteReader()
+                currentQuery := Some (r, q.Sql)
                 read q.Lens r)
             member __.Compile(q) = 
                 ignore (Async.getCmd prepared con provider q : DbCommand)
-            member db.QuerySingle(q, a) = db.Query(q, a) |> Async.toOpt q
+            member db.QuerySingle(q, a) = db.Query(q, a) |> Seq.toArray |> Async.toOpt q
+            member __.CancelQuery() =
+                match !currentQuery with
+                | None -> ()
+                | Some (r, _) -> try r.Close() with _ -> ()
             member __.Insert(table, lens: lens<'A>, a: seq<'A>) = 
                 let (o, pi) = Async.prepareInsert lens preparedInserts provider table con
                 if not <| Seq.isEmpty a then
@@ -1049,6 +1079,7 @@ type Db internal () =
                 let (rollback, commit) = Async.buildTxn txn provider savepoints con
                 try
                     let res = f db
+                    db.CancelQuery()
                     commit ()
                     res
                 with e -> rollback (); raise e }

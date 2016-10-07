@@ -18,6 +18,7 @@ open System
 open System.Data.Common
 open System.Collections.Generic
 open FSharpx.Control
+open FSharp.Control
 open System.Data.SQLite
 open FLenser.Core
 
@@ -83,11 +84,11 @@ module T1 =
         Query.Create(sql, Lens.NonQuery, Parameter.String("p1"), Parameter.OfLens tl)
 
     let runtests (db: Async.db) = async {
-        let! i1 = db.Query(byItem, "foo")
+        let! i1 = db.Query(byItem, "foo") |> Async.bind AsyncSeq.toArrayAsync
         print i1
         if i1.[0] <> List.head items then failwith (sprintf "0: %A" i1.[0])
         let! _ = db.NonQuery(changeBar, ("hello", 0L))
-        let! i2 = db.Query(byItem, "foo")
+        let! i2 = db.Query(byItem, "foo") |> Async.bind AsyncSeq.toArrayAsync
         print i2
         if i2.[0] = List.head items then failwith (sprintf "1: %A" i2.[0])
         if i2.[0] <> {(List.head items) with 
@@ -95,10 +96,10 @@ module T1 =
         then failwith (sprintf "2: %A" i2.[0])
         let newthing = A {foo = 42; bar = "42"; baz = Some 42.}
         do! db.NonQuery(changeThing, ("baz", newthing)) |> Async.Ignore
-        let! i3 = db.Query(byItem, "baz")
+        let! i3 = db.Query(byItem, "baz") |> Async.bind AsyncSeq.toArrayAsync
         if i3.[0] <> {(List.item 2 items) with thing = newthing} then
             failwith (sprintf "thing should be newthing %A" i3)
-        let! i7 = db.Query(all, ())
+        let! i7 = db.Query(all, ()) |> Async.bind AsyncSeq.toArrayAsync
         print i7 }
 
 module T2 =
@@ -136,7 +137,7 @@ module T2 =
         Query.Create("select * from bar where thingcat = :p", lens, Parameter.String("p"))
 
     let runtests (db: Async.db) = async {
-        let! i3 = db.Query(byCat, "foofoo")
+        let! i3 = db.Query(byCat, "foofoo") |> Async.bind AsyncSeq.toArrayAsync
         print i3
         if i3.[0] <> List.head items then 
             failwith (sprintf "T2 store/retreive fail: %A" i3.[0]) }
@@ -175,16 +176,16 @@ module T3 =
             Lens.Tuple(T1.lens, Lens.Optional(T2.lens)))
 
     let runtests (db: Async.db) = async {
-        let! i4 = db.Query(byTag, "Random Place")
+        let! i4 = db.Query(byTag, "Random Place") |> Async.bind AsyncSeq.toArrayAsync
         print i4
         if i4.[0] <> List.head items then failwith (sprintf "3: %A" i4.[0])
-        let! i5 = db.Query(everywhere, ())
+        let! i5 = db.Query(everywhere, ()) |> Async.bind AsyncSeq.toArrayAsync
         print i5
         Seq.iter2 (fun db loc -> if db <> loc then failwith (sprintf "4: %A" db)) 
             i5 items
-        let! i6 = db.Query(joined, ())
+        let! i6 = db.Query(joined, ()) |> Async.bind AsyncSeq.toArrayAsync
         print i6
-        let! i8 = db.Query(justNames, ())
+        let! i8 = db.Query(justNames, ()) |> Async.bind AsyncSeq.toArrayAsync
         print i8
         Seq.iter2 (fun name (name', _) -> 
             if name <> name' then failwith (sprintf "5: %A" name))
@@ -210,7 +211,7 @@ module T4 =
     let all = Query.Create("select * from units order by rowid", lens)
 
     let runtests (db: Async.db) = async {
-        let! r1 = db.Query(all, ())
+        let! r1 = db.Query(all, ()) |> Async.bind AsyncSeq.toArrayAsync
         Seq.iter2 (fun i1 i2 ->
             if i1 <> i2 then failwith (sprintf "not equal %A %A" i1 i2)
             printfn "%A" i1) r1 items }

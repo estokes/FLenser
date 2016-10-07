@@ -15,42 +15,51 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>. *)
 (* Why?
 
-* There aren't any object relational mappers that are designed speficially for F# record and variant types.
-Records, options, and variants are a nice way to think about data, and they map fairly well to database
-types. 
+* There aren't any object relational mappers that are designed
+speficially for F# record and variant types.  Records, options, and
+variants are a nice way to think about data, and they map fairly well
+to database types.
 
-* I prefer to write SQL directly, its a high level language all on it's own. Getting good performance
-out of a relational database is still enough of an art that I don't want another layer of translation
-in between me and SQL (e.g. Linq is cool, but I think ultimatly a burden).
+* I prefer to write SQL directly, its a high level language all on
+it's own. Getting good performance out of a relational database is
+still enough of an art that I don't want another layer of translation
+in between me and SQL (e.g. Linq is cool, but I think ultimatly a
+burden).
 
-* I don't mind manually keeping the database schema in sync with the types. In fact for complex
-databases this makes life easier as the schema evolves. I don't think tight coupling between the 
-database schema and the programming language types is a big win. *)
+* I don't mind manually keeping the database schema in sync with the
+types. In fact for complex databases this makes life easier as the
+schema evolves. I don't think tight coupling between the database
+schema and the programming language types is a big win. *)
 
 namespace FLenser.Core
 open System
 open System.Collections.Generic
 open System.Data.Common
+open FSharp.Control
 
-(* A virtual type field is a field in the database that is derived from
-   a function on the F# type. A virtual type field will exist as a column
-   in the database, but need not exist in the type at all. *)
+(* A virtual type field is a field in the database that is derived
+   from a function on the F# type. A virtual type field will exist as
+   a column in the database, but need not exist in the type at all. *)
 type virtualTypeField<'A> = 'A -> obj
 
-(* a virtual db field is an F# type field that is derived from a function
-   on the columns of the database. The first argument is the nesting prefix of
-   the type, the second is the fully qualified name of the field, should you need that. 
-   By default nothing will be done with the field when the type is inserted into the database, 
-   if you want to do something with it then also make a virtual type field. *)
+(* a virtual db field is an F# type field that is derived from a
+   function on the columns of the database. The first argument is the
+   nesting prefix of the type, the second is the fully qualified name
+   of the field, should you need that.  By default nothing will be
+   done with the field when the type is inserted into the database, if
+   you want to do something with it then also make a virtual type
+   field. *)
 type virtualDbField = String -> String -> DbDataReader -> obj
 
-(* A Lens bidirectionally maps an F# algebraic data type to a database row type. Lenses only work on
-   F# algebraic types (records, unions, and tuples), however if those types contain some other object
-   type then it will be pickled to JSON using FsPickler (because many databases support operations on 
-   JSON documents).
+(* A Lens bidirectionally maps an F# algebraic data type to a database
+   row type. Lenses only work on F# algebraic types (records, unions,
+   and tuples), however if those types contain some other object type
+   then it will be pickled to JSON using FsPickler (because many
+   databases support operations on JSON documents).
 
-   Translation begins with primitive type mappings. Each provider has it's own type mappings, for 
-   example here are the ones for PostgreSQL.
+   Translation begins with primitive type mappings. Each provider has
+   it's own type mappings, for example here are the ones for
+   PostgreSQL.
 
    .net     <==> PostgreSQL
    Boolean  <==>       bool
@@ -62,14 +71,17 @@ type virtualDbField = String -> String -> DbDataReader -> obj
    int      <==>        int
    int64    <==>        int
 
-   F# type fields map to database column names, which are prefixed with the string in the 
-   prefix argument, if specified. Database table names are not significant to the translation. 
-   The database schema isn't altered (or read) in any way, the user must manually ensure that the 
-   schema is compatible. All fields of the type must appear in the database,  however all columns 
-   of the database need not appear in the type. Columns with no corresponding type field will be 
-   ignored.  
+   F# type fields map to database column names, which are prefixed
+   with the string in the prefix argument, if specified. Database
+   table names are not significant to the translation.  The database
+   schema isn't altered (or read) in any way, the user must manually
+   ensure that the schema is compatible. All fields of the type must
+   appear in the database, however all columns of the database need
+   not appear in the type. Columns with no corresponding type field
+   will be ignored.
 
-   Examples (note $ is the default nesting separator, but you can change it)
+   Examples (note $ is the default nesting separator, but you can
+   change it)
 
    type t = {x: int; y: String}     <==> create table _ (x int, 
                                                          y text)
@@ -108,8 +120,10 @@ type virtualDbField = String -> String -> DbDataReader -> obj
                                                          Item2$x int,
                                                          Item2$y text)
   
-   The None case of the option type is encoded as SQL null when the Some case
-   is a primitive type. Otherwise it is treated like any other union type. *)
+
+   The None case of the option type is encoded as SQL null when the
+   Some case is a primitive type. Otherwise it is treated like any
+   other union type. *)
 [<Class>]
 type lens<'A> =
     member Guid : Guid with get
@@ -125,32 +139,32 @@ type NonQuery
 
    ?prefix:String -> lens<'A>
 
-   And Lens.create will call this method and use
-   the returned lens instead of processing the sub
-   record. You can use this functionality to define
-   virtual record fields and virtual db fields in just
-   one place such that they still work correctly when the
-   type is used as a sub record (e.g. say you're assembling
-   a large join and reading the results into a toplevel record
-   instead of a tuple) *)
+   And Lens.create will call this method and use the returned lens
+   instead of processing the sub record. You can use this
+   functionality to define virtual record fields and virtual db fields
+   in just one place such that they still work correctly when the type
+   is used as a sub record (e.g. say you're assembling a large join
+   and reading the results into a toplevel record instead of a tuple) *)
 [<Class>]
 type CreateSubLensAttribute =
     inherit Attribute
     new: unit -> CreateSubLensAttribute
 
-(* Flatten may be applied to non primitive record fields, and union cases. It causes the
-   prefix to be replaced with the prefix of the root lens (if specified) prepended to the optional 
-   prefix argument (if specified). It's effect is to flatten the namespace in a nested type, hoisting 
-   children of the field up to the same level as the field itself. Flatten and rename may not be used 
-   together. *)
+(* Flatten may be applied to non primitive record fields, and union
+   cases. It causes the prefix to be replaced with the prefix of the
+   root lens (if specified) prepended to the optional prefix argument
+   (if specified). It's effect is to flatten the namespace in a nested
+   type, hoisting children of the field up to the same level as the
+   field itself. Flatten and rename may not be used together. *)
 [<Class>]
 type FlattenAttribute =
     inherit Attribute
     new: unit -> FlattenAttribute
     member Prefix: String with get, set
 
-(* Rename may be applied to record fields and union cases. it causes the database column to
-   be called something different than the field/case name. *)
+(* Rename may be applied to record fields and union cases. it causes
+   the database column to be called something different than the
+   field/case name. *)
 [<Class>]
 type RenameAttribute =
     inherit Attribute
@@ -162,19 +176,21 @@ type Lens =
     static member Create : ?virtualDbFields:Map<list<String>,virtualDbField> 
         * ?virtualTypeFields:Map<list<String>,virtualTypeField<'A>> 
         * ?prefix:list<String> * ?nestingSeparator:String -> lens<'A>
-    // A special lens that reads nothing, used for side effecting queries
+    // A special lens that reads nothing, used for side effecting
+    // queries
     static member NonQuery: lens<NonQuery> with get
-    // Given an A Lens, produce an optional A Lens. When reading, if all columns of
-    // A are null, the optional Lens produces None, otherwise it invokes the A Lens
-    // and produces the result
+    // Given an A Lens, produce an optional A Lens. When reading, if
+    // all columns of A are null, the optional Lens produces None,
+    // otherwise it invokes the A Lens and produces the result
     static member Optional: lens:lens<'A> -> lens<Option<'A>>
-    // Given an A lens and a B lens produce a lens that reads/writes both
-    // A and B and returns a tuple A * B. Useful for reading the results of
-    // a join. If A and B have intersecting column names with the same data, 
-    // for example the join field, you may add the intersecting column name
-    // to the allowedIntersection set. Any intersecting column names not in
-    // allowedIntersection will cause a runtime error to be raised when the
-    // lens is built (normally during type initialization).
+    // Given an A lens and a B lens produce a lens that reads/writes
+    // both A and B and returns a tuple A * B. Useful for reading the
+    // results of a join. If A and B have intersecting column names
+    // with the same data, for example the join field, you may add the
+    // intersecting column name to the allowedIntersection set. Any
+    // intersecting column names not in allowedIntersection will cause
+    // a runtime error to be raised when the lens is built (normally
+    // during type initialization).
     static member Tuple: lensA:lens<'A> * lensB:lens<'B> 
         * ?allowedIntersection:Set<String> -> lens<'A * 'B>
     static member Tuple: lensA:lens<'A> * lensB:lens<'B> * lensC:lens<'C> 
@@ -182,8 +198,8 @@ type Lens =
     static member Tuple: lensA:lens<'A> * lensB:lens<'B> * lensC:lens<'C> 
         * lensD:lens<'D> * ?allowedIntersection:Set<String> 
         -> lens<'A * 'B * 'C * 'D>
-    // The maximum tuple size is 5. However it's quite easy to add more
-    // It just hasn't been necessary.
+    // The maximum tuple size is 5. However it's quite easy to add
+    // more It just hasn't been necessary.
     static member Tuple: lensA:lens<'A> * lensB:lens<'B> * lensC:lens<'C> 
         * lensD:lens<'D> * lensE:lens<'E> * ?allowedIntersection:Set<String> 
         -> lens<'A * 'B * 'C * 'D * 'E>
@@ -264,8 +280,8 @@ type PreparedInsert =
     abstract member RowAsync: obj[] -> Async<unit>
 
 // When a lens chooses to serialize something to Json, it will pass
-// this type to the database provider instead of the raw string
-// which is returned by Data. Some databases need to be told
+// this type to the database provider instead of the raw string which
+// is returned by Data. Some databases need to be told
 [<Class>]
 type json =
     member Data: String with get
@@ -293,48 +309,57 @@ module Async =
     type db =
         inherit IDisposable
 
-        // Execute a query, returning it's result
-        abstract member Query: query<'A, 'B> * 'A -> Async<List<'B>>
+        // Execute a query, returning a stream of results.  If you
+        // don't want to read all the results call CancelQuery.  Only
+        // one Query may be running at a time.
+        abstract member Query: query<'A, 'B> * 'A -> Async<AsyncSeq<'B>>
 
         // Execute a query expected to return 0 or 1 rows, if it returns
         // more an exception will be raised.
         abstract member QuerySingle: query<'A, 'B> * 'A -> Async<Option<'B>>
 
+        // if a query is in progress, cancel it, if not do nothing
+        abstract member CancelQuery: unit -> Async<unit>
+
         // Execute a mutator, returning the number of rows altered
         abstract member NonQuery: query<'A, NonQuery> * 'A -> Async<int>
 
-        // Prepare the query. This is optional, and if you don't call this
-        // the query will be prepared the first time you use it, and
-        // the prepared statement will be reused until the connection
-        // associated with it is terminated. However if you have a
-        // large library of queries you may want to check them for
-        // errors at startup time, or during development.
+        // Prepare the query. This is optional, and if you don't call
+        // this the query will be prepared the first time you use it,
+        // and the prepared statement will be reused until the
+        // connection associated with it is terminated. However if you
+        // have a large library of queries you may want to check them
+        // for errors at startup time, or during development.
         abstract member Compile: query<_, _> -> Async<unit>
 
-        // insert the sequence of objects into the named table using the 
-        // specified lens. Most providers implement this with a special db
-        // specific bulk insertion mechanism. For example COPY in Postgresql.
+        // insert the sequence of objects into the named table using
+        // the specified lens. Most providers implement this with a
+        // special db specific bulk insertion mechanism. For example
+        // COPY in Postgresql.
         abstract member Insert: table:String * lens<'A> * seq<'A> -> Async<unit>
 
-        // Execute a set of Query and NonQuery calls as an atomic transaction.
-        // In the transaction you must use ONLY the db object passed
-        // in to you. You must not keep a reference to this object that
-        // lives longer than the scope of the function.
+        // Execute a set of Query and NonQuery calls as an atomic
+        // transaction.  In the transaction you must use ONLY the db
+        // object passed in to you. You must not keep a reference to
+        // this object that lives longer than the scope of the
+        // function. That includes returning the AsyncSeq from a Query
+        // and processing it outside the transaction, that won't work.
         abstract member Transaction: (db -> Async<'a>) -> Async<'a>
 
-        // If this db would normally retry on error, turn that off
-        // for every operation done inside the closure.
-        // Within the closure you much used the passed in db object, and
-        // you must not save that object anywhere.
+        // If this db would normally retry on error, turn that off for
+        // every operation done inside the closure.  Within the
+        // closure you much used the passed in db object, and you must
+        // not save that object anywhere.
         abstract member NoRetry: (db -> Async<'A>) -> Async<'A>
 
     [<Class>]
     type Db =
         static member Connect: Provider<_,_,_> -> Async<db>
 
-        // This will return a db that will retry queries marked safetoretry
-        // on error. This may in rare cases result in multiple successful executions
-        // of a query, so ensure that queries marked safe to retry are idempotent
+        // This will return a db that will retry queries marked
+        // safetoretry on error. This may in rare cases result in
+        // multiple successful executions of a query, so ensure that
+        // queries marked safe to retry are idempotent
         static member WithRetries: Provider<_,_,_>
             * ?log:(Exception -> unit) 
             * ?tries:int 
@@ -342,8 +367,9 @@ module Async =
 
 type db =
     inherit IDisposable
-    abstract member Query: query<'A, 'B> * 'A -> List<'B>
+    abstract member Query: query<'A, 'B> * 'A -> seq<'B>
     abstract member QuerySingle: query<'A, 'B> * 'A -> Option<'B>
+    abstract member CancelQuery: unit -> unit
     abstract member NonQuery: query<'A, NonQuery> * 'A -> int
     abstract member Compile: query<_, _> -> unit
     abstract member Insert: table:String * lens<'A> * seq<'A> -> unit
