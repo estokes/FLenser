@@ -1,7 +1,8 @@
+source ../nuget
+nuget FLenser.Core
+
 source https://www.nuget.org/api/v2
 nuget FSharpx.Extras
 nuget FsPickler.Json
 nuget FsUnit
 nuget Npgsql
-nuget System.Data.SQLite.Core
-nuget FLenser.Core

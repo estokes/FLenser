@@ -1,8 +1,9 @@
 NUGET
-  remote: https://www.nuget.org/api/v2
-    FLenser.Core (1.4.14)
+  remote: ../nuget
+    FLenser.Core (1.4.14.2)
       FSharpx.Extras
       FsPickler.Json
+  remote: https://www.nuget.org/api/v2
     FSharp.Control.AsyncSeq (2.0.9)
     FSharp.Core (4.0.0.1)
     FSharpx.Async (1.13)
@@ -172,7 +173,6 @@ NUGET
       System.Runtime.Extensions (>= 4.1) - framework: >= netstandard12
       System.Text.RegularExpressions (>= 4.1) - framework: >= netstandard12
       System.Threading.Tasks (>= 4.0.11) - framework: >= netstandard12
-    System.Data.SQLite.Core (1.0.103)
     System.Diagnostics.Contracts (4.0.1) - framework: >= netstandard13
       System.Runtime (>= 4.1) - framework: dnxcore50, >= netstandard10
     System.Diagnostics.Debug (4.0.11) - framework: >= netstandard10

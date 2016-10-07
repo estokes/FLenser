@@ -935,7 +935,7 @@ module Async =
                     let (rollback, commit) = buildTxn txn provider savepoints con
                     try
                         let! res = f db
-                        db.CancelQuery()
+                        do! db.CancelQuery()
                         commit ()
                         return res
                     with e -> rollback (); return raise e } } }
